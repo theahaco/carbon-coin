@@ -1,6 +1,8 @@
 {
   "network": "testnet",
-  "mptIssuanceId": "0140588A60AD414AC57B9EE936049173E9CF215CB1BA2DE9",
+  "mptIssuanceId": "014065D7B11826B116E4B189DDE0A405680FEFED641D1DDC",
+  "assetScale": 3,
+  "flags": 102,
   "token": {
     "ticker": "HQUAY",
     "name": "Harrowquay Real Estate Fund (demo), Class X",
@@ -9,7 +11,7 @@
     "issuerName": "Harrowquay Real Estate Fund (fictional demo)"
   },
   "issuer": {
-    "address": "r9FBRP7L5gnqG7LiHw1SqDwZ14V9rXhEHY",
+    "address": "rH9PYrGRAfLJ3kJCPFrdHLULXf6yQMiw4y",
     "quorum": 2,
     "signers": [
       {
@@ -24,7 +26,7 @@
     ]
   },
   "governance": {
-    "address": "rf8KiuvfVqZ3GkwmQTUCyWySAW1Pv5qEVA",
+    "address": "rJZLs3cdQnHuf3fJPhC2bo3NghUbG7KWWB",
     "quorum": 2,
     "signers": [
       {
