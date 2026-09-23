@@ -1,3 +1,10 @@
+// Temporary bootstrap for the unpublished SDK prototype: npm cannot install
+// packages/xrpl directly from a Git dependency on the monorepo, so this builds
+// the pinned checkout for the root and web file: dependencies. Prototype:
+// https://github.com/theahaco/xrpl.js/pull/57
+// Remove this script and its npm/CI hooks once both consumers use an installable
+// SDK release or prebuilt package with matching runtime dependencies and types.
+// SDK follow-up (still source-pinned): https://github.com/theahaco/carbon-coin/pull/10
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

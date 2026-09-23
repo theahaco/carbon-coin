@@ -22,9 +22,7 @@ export async function startLedgerAdvanceLoop(wsUrl: string, intervalMs = 500): P
   await client.connect()
 
   const interval = setInterval(() => {
-    // ledger_accept is an admin-only stand-alone-mode command not modeled in
-    // xrpl.js's public Request union; the unknown-command overload supports it.
-    client.request({ command: 'ledger_accept' }).catch(() => {})
+    client.command.ledgerAccept().catch(() => {})
   }, intervalMs)
 
   return {

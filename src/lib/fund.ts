@@ -20,6 +20,9 @@ const LOCAL_FUNDING_AMOUNT_XRP = '1000'
 export async function fundNewWallet(client: Client, network: NetworkConfig): Promise<Wallet> {
   if (network.name === 'local') {
     const wallet = Wallet.generate()
+    // The genesis account's published address was derived with secp256k1;
+    // xrpl.js defaults Wallet.fromSeed to ed25519, which yields a different
+    // (wrong) address for this seed, so the algorithm must be explicit.
     const genesis = Wallet.fromSeed(STANDALONE_GENESIS_ACCOUNT.secret, { algorithm: ECDSA.secp256k1 })
     await withWalletClient(client, genesis, async (signing) => {
       await signing.tx.payment({

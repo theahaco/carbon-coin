@@ -20,7 +20,7 @@ successfully. Ledger reads use the discoverable `client.command` API with inferr
 response types. GhostSig still owns browser keys and the multi-person ceremony;
 we never instantiate a local signing wallet for a GhostSig address.
 
-See [the migration and helper review](docs/aha-prototype-review.md) for before/after
+See [the migration PR](https://github.com/theahaco/carbon-coin/pull/9) for before/after
 code, remaining boundaries, related SDK PRs, and validation.
 
 ## Design summary
