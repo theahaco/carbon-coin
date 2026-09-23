@@ -1,7 +1,13 @@
 import { connectClient } from '../lib/client.js'
-import { localSigners, submitMultisigned } from '../lib/multisig.js'
-import { buildMptPaymentTx } from '../lib/mpt.js'
-import { loadDeploymentState, requireGovernance, requireIssuer, requireMptIssuanceId, saveDeploymentState } from '../lib/config.js'
+import { localSigners } from '../lib/multisig.js'
+import { encodeMemo } from 'xrpl'
+import {
+  loadDeploymentState,
+  requireGovernance,
+  requireIssuer,
+  requireMptIssuanceId,
+  saveDeploymentState,
+} from '../lib/config.js'
 
 const MEMO_TYPE = 'mint-period'
 
@@ -12,7 +18,9 @@ function parseArgs(argv: string[]): { amount: string; period: string; force: boo
   const period = positional[1] ?? String(new Date().getFullYear())
 
   if (!amount || !/^\d+$/.test(amount)) {
-    throw new Error('Usage: npm run mint -- <amount> [period] [--force]\n  <amount> must be a whole non-negative integer (no decimals -- AssetScale is omitted for this token).')
+    throw new Error(
+      'Usage: npm run mint -- <amount> [period] [--force]\n  <amount> must be a whole non-negative integer (no decimals -- AssetScale is omitted for this token).',
+    )
   }
   return { amount, period, force }
 }
@@ -36,13 +44,18 @@ async function main(): Promise<void> {
   const { client, network } = await connectClient()
   try {
     console.log(`Connected to ${network.name} (${network.wsUrl}).`)
-    console.log(`Minting ${amount} unit(s) for period "${period}" to governance account ${governance.address}...`)
+    console.log(
+      `Minting ${amount} unit(s) for period "${period}" to governance account ${governance.address}...`,
+    )
 
-    const paymentTx = buildMptPaymentTx(issuer.address, governance.address, mptIssuanceId, amount, {
-      type: MEMO_TYPE,
-      data: period,
-    })
-    const result = await submitMultisigned(client, paymentTx, localSigners(issuer.signers, issuer.quorum))
+    const result = await client
+      .forAccount(issuer.address)
+      .tx.payment({
+        Destination: governance.address,
+        Amount: { mpt_issuance_id: mptIssuanceId, value: amount },
+        Memos: [encodeMemo({ type: MEMO_TYPE, data: period })],
+      })
+      .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
     console.log(`Mint succeeded (tx hash: ${result.result.hash}).`)
 
     const mintedPeriods = [...(state.mintedPeriods ?? [])]

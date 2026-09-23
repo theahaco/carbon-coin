@@ -1,5 +1,4 @@
-import { Client, parseMPTokenFlags } from 'xrpl'
-import { isLedgerError, readMptHolding } from '../../../src/lib/ledger.js'
+import { Client, RippledError, decodeMemo, fetchMPTokenOrUndefined, parseMPTokenFlags } from 'xrpl'
 
 // GHOSTSIG only understands XRPL testnet/devnet/mainnet, so this demo is
 // pinned to the public Testnet -- the same network `XRPL_NETWORK=testnet`
@@ -39,7 +38,7 @@ export interface MptHolding {
 /** Read confirmed holdings. A missing entry is distinct from a failed network read. */
 export async function getMptHolding(address: string, mptIssuanceId: string): Promise<MptHolding> {
   const client = await getClient()
-  const token = await readMptHolding(client, address, mptIssuanceId)
+  const token = await fetchMPTokenOrUndefined(client, address, mptIssuanceId, 'validated')
   return {
     authorized: token !== undefined,
     balanceRaw: token?.MPTAmount ?? '0',
@@ -47,21 +46,20 @@ export async function getMptHolding(address: string, mptIssuanceId: string): Pro
   }
 }
 
-/**
- * A human-readable warning if `address` can't yet receive this MPT --
- * it hasn't self-authorized, or doesn't exist on the ledger yet -- or
- * `null` if it looks ready. A Payment to a destination that hasn't
- * authorized fails once it's actually submitted; for a multisig
- * ceremony that's only discovered when the *last* signature finally
- * reaches quorum, wasting everyone's part in collecting it. Checking
- * up front (when proposing, and again before adding a later signature)
- * catches this before anyone signs anything.
- */
-export async function destinationReadinessWarning(address: string, mptIssuanceId: string, ticker: string): Promise<string | null> {
-  const holding = await getMptHolding(address, mptIssuanceId)
-  if (holding.locked) return `${address}'s ${ticker} holding is locked — transfers will fail until the issuer unlocks it.`
-  if (holding.authorized) return null
-  return `${address} hasn't authorized themself to hold ${ticker} yet (or doesn't exist on Testnet) — sending to it will fail until it does. They can self-authorize from the dashboard once they connect with GhostSig.`
+/** Advisory checks for this transfer; failed reads remain visible as errors. */
+export async function destinationReadinessWarning(
+  account: string,
+  destination: string,
+  mptIssuanceId: string,
+  amount?: string,
+): Promise<string | null> {
+  const client = await getClient()
+  const readiness = await client.getMptTransferReadiness({ account, destination, mptIssuanceId, amount })
+  if (readiness.status === 'eligible') return null
+  return readiness.checks
+    .filter((check) => check.status !== 'pass')
+    .map((check) => check.message)
+    .join(' ')
 }
 
 /** Returns the account's XRP balance in drops, or `undefined` if it isn't funded/activated yet. */
@@ -71,7 +69,7 @@ export async function getXrpBalanceDrops(address: string): Promise<string | unde
     const res = await client.command.accountInfo({ account: address })
     return res.result.account_data.Balance
   } catch (error) {
-    if (isLedgerError(error, 'actNotFound')) return undefined
+    if (error instanceof RippledError && error.code === 'actNotFound') return undefined
     throw error
   }
 }
@@ -80,80 +78,28 @@ export async function isAccountFunded(address: string): Promise<boolean> {
   return (await getXrpBalanceDrops(address)) !== undefined
 }
 
-/**
- * The account's current `Sequence`. GHOSTSIG refuses to autofill `Sequence`
- * for any multisig-shaped payload (an empty `SigningPubKey`/a `Signers`
- * array) -- "a multi-signed transaction is fixed by its first signer" --
- * even when it's this wallet's own account, so a ceremony proposal must
- * fetch and set it explicitly before ever calling GHOSTSIG.
- */
-export async function getAccountSequence(address: string): Promise<number> {
-  const client = await getClient()
-  const res = await client.command.accountInfo({ account: address })
-  return res.result.account_data.Sequence
-}
-
-/** The current network reference (base) transaction cost, in drops. */
-export async function getBaseFeeDrops(): Promise<bigint> {
-  const client = await getClient()
-  const res = await client.command.fee()
-  return BigInt(res.result.drops.base_fee)
-}
-
-/**
- * A multisig transaction's fee scales with the number of signatures applied
- * (base_fee * (1 + signatures)). GHOSTSIG fills in `Sequence`/
- * `LastLedgerSequence` for its own account automatically, but can't know in
- * advance how many signers a ceremony will eventually need, so this app
- * sizes `Fee` itself, for the account's configured quorum.
- */
-export async function computeMultisigFeeDrops(quorum: number): Promise<string> {
-  const baseFee = await getBaseFeeDrops()
-  return (baseFee * BigInt(quorum + 1)).toString()
-}
-
 export interface MintRecord {
   period: string
   amountRaw: string
   hash?: string
 }
 
-function hexToUtf8(hex: string): string {
-  const clean = hex.trim()
-  const bytes = new Uint8Array(clean.length / 2)
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16)
-  }
-  return new TextDecoder().decode(bytes)
-}
-
-/**
- * Reads the issuer's `account_tx` history for `Payment`s carrying a
- * `mint-period` memo (a public, secretless ledger read) -- this is how the
- * propose-a-mint form discovers previously-used periods, instead of
- * tracking them in a local file the browser has no access to.
- */
-export async function getMintHistory(issuerAddress: string): Promise<MintRecord[]> {
+/** Successful outgoing mints of this issuance across every available page. */
+export async function getMintHistory(issuerAddress: string, mptIssuanceId: string): Promise<MintRecord[]> {
   const client = await getClient()
-  const res = await client.command.accountTx({ account: issuerAddress, limit: 200, api_version: 1 })
-  const records: MintRecord[] = []
-  for (const entry of res.result.transactions ?? []) {
-    const tx = entry.tx
-    if (!tx || tx.TransactionType !== 'Payment') continue
-    const memos = tx.Memos ?? []
-    for (const wrapper of memos) {
-      const memo = wrapper.Memo
-      if (!memo?.MemoType || hexToUtf8(memo.MemoType) !== 'mint-period') continue
-      const period = memo.MemoData ? hexToUtf8(memo.MemoData) : ''
-      const amount = tx.Amount
-      records.push({
-        period,
-        amountRaw: typeof amount === 'string' ? '0' : amount.value,
-        hash: tx.hash,
-      })
+  const { payments } = await client.getMptPaymentHistory(issuerAddress, mptIssuanceId)
+  return payments.flatMap(({ transaction, deliveredAmount, hash }) => {
+    if (deliveredAmount === undefined) return []
+    for (const memo of transaction.Memos ?? []) {
+      try {
+        const { type, data } = decodeMemo(memo)
+        if (type === 'mint-period' && data) return [{ period: data, amountRaw: deliveredAmount, hash }]
+      } catch {
+        /* Binary or malformed memos cannot describe a mint period. */
+      }
     }
-  }
-  return records
+    return []
+  })
 }
 
 /** Suggests the next mint period: the highest numeric period on record, plus one; falls back to the current year. */

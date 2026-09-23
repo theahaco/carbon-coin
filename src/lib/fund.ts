@@ -1,6 +1,5 @@
 import { Client, Wallet, xrpToDrops, ECDSA } from 'xrpl'
 import { STANDALONE_GENESIS_ACCOUNT, type NetworkConfig } from './network.js'
-import { withWalletClient } from './client.js'
 import type { SignerWallet } from './config.js'
 
 /**
@@ -24,12 +23,13 @@ export async function fundNewWallet(client: Client, network: NetworkConfig): Pro
     // xrpl.js defaults Wallet.fromSeed to ed25519, which yields a different
     // (wrong) address for this seed, so the algorithm must be explicit.
     const genesis = Wallet.fromSeed(STANDALONE_GENESIS_ACCOUNT.secret, { algorithm: ECDSA.secp256k1 })
-    await withWalletClient(client, genesis, async (signing) => {
-      await signing.tx.payment({
+    const signing = client.withWallet(genesis)
+    await signing.tx
+      .payment({
         Destination: wallet.address,
         Amount: xrpToDrops(LOCAL_FUNDING_AMOUNT_XRP),
-      }).signAndSubmit()
-    })
+      })
+      .signAndSubmit()
     return wallet
   }
 
@@ -38,7 +38,11 @@ export async function fundNewWallet(client: Client, network: NetworkConfig): Pro
 }
 
 /** Funds `count` new placeholder signer wallets, in the shape persisted to .deployment.json. */
-export async function fundSignerWallets(client: Client, network: NetworkConfig, count: number): Promise<SignerWallet[]> {
+export async function fundSignerWallets(
+  client: Client,
+  network: NetworkConfig,
+  count: number,
+): Promise<SignerWallet[]> {
   const signers: SignerWallet[] = []
   for (let i = 0; i < count; i++) {
     const wallet = await fundNewWallet(client, network)

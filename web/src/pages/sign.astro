@@ -95,14 +95,17 @@ import Layout from '../layouts/Layout.astro'
       signCard.style.display = 'block'
       updateSignButtonVisibility()
       destinationWarning.style.display = 'none'
-      if (typeof tx.Destination === 'string' && config.mptIssuanceId) {
-        destinationReadinessWarning(tx.Destination, config.mptIssuanceId, config.token.ticker)
+      if (typeof tx.Account === 'string' && typeof tx.Destination === 'string' && config.mptIssuanceId) {
+        destinationReadinessWarning(tx.Account, tx.Destination, config.mptIssuanceId)
           .then((warning) => {
             if (!warning) return
             statusMessage(destinationWarning, 'info', `\u26a0\ufe0f ${warning}`)
             destinationWarning.style.display = 'block'
           })
-          .catch(() => {})
+          .catch(() => {
+            destinationWarning.textContent = 'Could not check token eligibility. Try again before signing.'
+            destinationWarning.style.display = 'block'
+          })
       }
     }
 

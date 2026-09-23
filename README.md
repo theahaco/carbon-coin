@@ -8,20 +8,23 @@ governance account, which will later decide fund allocation.
 
 ## Aha DevX prototype
 
-This branch uses [the aha xrpl.js prototype (PR #57)](https://github.com/theahaco/xrpl.js/pull/57),
+This branch uses [the aha SDK stack (#59 → #62)](https://github.com/theahaco/xrpl.js/issues/58),
+version `5.3.0-aha.devx.1`,
 pinned to the commit in [`prototype.json`](prototype.json). Run `npm run prototype:setup`
 before installing this app. It creates an ignored `.prototype/xrpl.js` checkout and
 builds all seven SDK packages; both the CLI and browser resolve that same build.
 No npm release or developer-specific checkout path is needed. CI uses the same setup.
 To update the SDK, change the commit pin, rerun setup, and refresh both lockfiles.
 
-Local signing uses `WalletClient.tx` and throws unless the transaction validates
-successfully. Ledger reads use the discoverable `client.command` API with inferred
+Local signing uses `client.withWallet(wallet).tx` on the existing connection.
+Multisig uses `client.forAccount(address).tx` and throws unless the transaction
+validates successfully. Ledger reads use the discoverable `client.command` API with inferred
 response types. GhostSig still owns browser keys and the multi-person ceremony;
 we never instantiate a local signing wallet for a GhostSig address.
 
-See [the migration PR](https://github.com/theahaco/carbon-coin/pull/9) for before/after
-code, remaining boundaries, related SDK PRs, and validation.
+See [the SDK stack cleanup](docs/aha-sdk-stack-cleanup.md) for the new before/after
+examples, deleted helpers and verification. The [initial migration PR](https://github.com/theahaco/carbon-coin/pull/9)
+records the findings that motivated this stack.
 
 ## Design summary
 

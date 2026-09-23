@@ -1,4 +1,4 @@
-import { connectClient, withWalletClient } from '../lib/client.js'
+import { connectClient } from '../lib/client.js'
 import { fundNewWallet, parseSignerAddressesEnv, resolveSignerWallets } from '../lib/fund.js'
 import { establishMultisigAndDisableMasterKey } from '../lib/accountSetup.js'
 import { MPT_ISSUANCE_FLAGS } from '../lib/mpt.js'
@@ -38,18 +38,21 @@ async function main(): Promise<void> {
     // one-time bootstrap action would itself need a live, multi-person
     // browser ceremony just to get the token issued.
     const metadataHex = buildMptMetadataHex(readTokenMetadataConfig())
-    const mptIssuanceId = await withWalletClient(client, issuer, async (signing) => {
-      const issued = await signing.tx.mpTokenIssuanceCreate({
+    const signing = client.withWallet(issuer)
+    const issued = await signing.tx
+      .mpTokenIssuanceCreate({
         MPTokenMetadata: metadataHex,
         Flags: MPT_ISSUANCE_FLAGS,
-      }).signAndSubmit()
-      const id = issued.result.meta.mpt_issuance_id
-      if (!id) throw new Error('MPTokenIssuanceCreate succeeded but no mpt_issuance_id was returned.')
-      console.log(`Created MPT issuance: ${id}`)
-      await establishMultisigAndDisableMasterKey(signing, signers, SIGNER_QUORUM)
-      return id
-    })
-    console.log(`Configured ${SIGNER_QUORUM}-of-${signers.length} multisig and disabled the issuer's master key.`)
+      })
+      .signAndSubmit()
+    const mptIssuanceId = issued.result.meta.mpt_issuance_id
+    if (!mptIssuanceId)
+      throw new Error('MPTokenIssuanceCreate succeeded but no mpt_issuance_id was returned.')
+    console.log(`Created MPT issuance: ${mptIssuanceId}`)
+    await establishMultisigAndDisableMasterKey(signing, signers, SIGNER_QUORUM)
+    console.log(
+      `Configured ${SIGNER_QUORUM}-of-${signers.length} multisig and disabled the issuer's master key.`,
+    )
 
     saveDeploymentState({
       ...state,

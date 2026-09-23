@@ -1,10 +1,10 @@
-import { AccountSetAsfFlags, type WalletClient } from 'xrpl'
+import { AccountSetAsfFlags, type WalletContext } from 'xrpl'
 import type { SignerWallet } from './config.js'
 import { signerListFields } from './multisig.js'
 
 /** Establish the signer quorum before disabling the master key. Either failure throws. */
 export async function establishMultisigAndDisableMasterKey(
-  client: WalletClient,
+  client: WalletContext,
   signers: SignerWallet[],
   quorum: number,
 ): Promise<void> {

@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { buildMptPaymentTx } from '../../src/lib/mpt.js'
+import { Client, Wallet, encodeMemo } from 'xrpl'
+const client = new Client('ws://localhost:6006')
+const source = Wallet.generate().address
+const destination = Wallet.generate().address
 
-describe('mpt.ts memo encoding (browser compatibility)', () => {
+describe('SDK memo encoding (browser compatibility)', () => {
   const originalBuffer = globalThis.Buffer
 
   beforeEach(() => {
-    // `mpt.ts` is reused unmodified in the browser bundle under `web/`,
+    // The SDK memo helper is used in the browser bundle under `web/`,
     // where Node's `Buffer` global does not exist. Deleting it here
     // reproduces that environment exactly, so a future edit that
     // reintroduces a `Buffer` dependency fails this test instead of only
@@ -19,10 +22,14 @@ describe('mpt.ts memo encoding (browser compatibility)', () => {
   })
 
   it('encodes a memo without referencing the Node Buffer global', () => {
-    const tx = buildMptPaymentTx('rFrom', 'rTo', 'ABCDEF0123456789', '100', {
-      type: 'mint-period',
-      data: '2027',
-    })
+    const tx = client
+      .forAccount(source)
+      .tx.payment({
+        Destination: destination,
+        Amount: { mpt_issuance_id: '0'.repeat(48), value: '100' },
+        Memos: [encodeMemo({ type: 'mint-period', data: '2027' })],
+      })
+      .toJSON()
 
     expect(tx.Memos).toEqual([
       {
@@ -35,7 +42,7 @@ describe('mpt.ts memo encoding (browser compatibility)', () => {
   })
 
   it('omits Memos entirely when no memo is given', () => {
-    const tx = buildMptPaymentTx('rFrom', 'rTo', 'ABCDEF0123456789', '100')
+    const tx = client.forAccount(source).tx.payment({ Destination: destination, Amount: '100' }).toJSON()
     expect(tx.Memos).toBeUndefined()
   })
 })

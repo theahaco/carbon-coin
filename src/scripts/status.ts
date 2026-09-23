@@ -1,9 +1,14 @@
 import type { Client } from 'xrpl'
-import { readMptHolding } from '../lib/ledger.js'
+import { fetchMPTokenOrUndefined } from 'xrpl'
 import { connectClient } from '../lib/client.js'
 import { loadDeploymentState, type AccountState } from '../lib/config.js'
 
-async function printAccountStatus(client: Client, label: string, account: AccountState, mptIssuanceId?: string): Promise<void> {
+async function printAccountStatus(
+  client: Client,
+  label: string,
+  account: AccountState,
+  mptIssuanceId?: string,
+): Promise<void> {
   console.log(`\n${label}: ${account.address}`)
 
   const signerLists = await client.command.accountObjects({ account: account.address, type: 'signer_list' })
@@ -20,7 +25,7 @@ async function printAccountStatus(client: Client, label: string, account: Accoun
   console.log(`  Master key disabled: ${masterKeyDisabled}`)
 
   if (mptIssuanceId) {
-    const mptoken = await readMptHolding(client, account.address, mptIssuanceId)
+    const mptoken = await fetchMPTokenOrUndefined(client, account.address, mptIssuanceId, 'validated')
     console.log(`  MPT balance: ${mptoken ? (mptoken.MPTAmount ?? '0') : '(not authorized)'}`)
   }
 }

@@ -64,15 +64,28 @@ import Layout from '../layouts/Layout.astro'
     const mptIssuanceId = requireMptIssuanceId(config)
 
     try {
-      const history = await getMintHistory(issuer.address)
+      const history = await getMintHistory(issuer.address, mptIssuanceId)
       periodInput.value = suggestNextMintPeriod(history)
       if (history.length > 0) {
-        const rows = history
-          .map((r) => `<tr><td>${r.period}</td><td>${toGton(r.amountRaw)} ${config.token.ticker}</td></tr>`)
-          .join('')
-        historyArea.innerHTML = `<p style="font-family: system-ui, sans-serif; font-size: 0.85rem;"><strong>Previous mints on record:</strong></p><table style="width:100%; font-family: system-ui, sans-serif; font-size: 0.85rem;"><thead><tr><th style="text-align:left;">Period</th><th style="text-align:left;">Amount</th></tr></thead><tbody>${rows}</tbody></table>`
+        const heading = document.createElement('p')
+        heading.textContent = 'Previous mints on record:'
+        const table = document.createElement('table')
+        const header = table.createTHead().insertRow()
+        for (const title of ['Period', 'Amount']) {
+          const cell = document.createElement('th')
+          cell.textContent = title
+          header.append(cell)
+        }
+        const body = table.createTBody()
+        for (const record of history) {
+          const row = body.insertRow()
+          row.insertCell().textContent = record.period
+          row.insertCell().textContent = `${toGton(record.amountRaw)} ${config.token.ticker}`
+        }
+        historyArea.replaceChildren(heading, table)
       }
     } catch {
+      historyArea.textContent = 'Mint history is unavailable. Verify the period before proposing another mint.'
       periodInput.value = String(new Date().getFullYear())
     }
 

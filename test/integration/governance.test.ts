@@ -1,9 +1,14 @@
+import { localSigners } from '../../src/lib/multisig.js'
+import { fetchMPTokenOrUndefined } from 'xrpl'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { readMptHolding } from '../../src/lib/ledger.js'
-import { submitMultisigned } from '../../src/lib/multisig.js'
-import { buildMptPaymentTx } from '../../src/lib/mpt.js'
 import { startLocalNetwork, type LocalNetworkHandle } from '../helpers/localNetwork.js'
-import { connectClient, setupAuthorizedHolder, setupGovernance, setupIssuer, testEnv } from '../helpers/fixtures.js'
+import {
+  connectClient,
+  setupAuthorizedHolder,
+  setupGovernance,
+  setupIssuer,
+  testEnv,
+} from '../helpers/fixtures.js'
 
 describe('governance', () => {
   let network: LocalNetworkHandle
@@ -23,7 +28,10 @@ describe('governance', () => {
       const { mptIssuanceId } = await setupIssuer(client, netCfg, env)
       const governance = await setupGovernance(client, netCfg, mptIssuanceId)
 
-      const signerLists = await client.command.accountObjects({ account: governance.address, type: 'signer_list' })
+      const signerLists = await client.command.accountObjects({
+        account: governance.address,
+        type: 'signer_list',
+      })
       const signerList = signerLists.result.account_objects[0]
       expect(signerList?.SignerQuorum).toBe(2)
       expect(signerList?.SignerEntries).toHaveLength(3)
@@ -33,7 +41,7 @@ describe('governance', () => {
 
       const mptObjects = await client.command.accountObjects({ account: governance.address, type: 'mptoken' })
       expect(mptObjects.result.account_objects).toHaveLength(1)
-      const holding = await readMptHolding(client, governance.address, mptIssuanceId)
+      const holding = await fetchMPTokenOrUndefined(client, governance.address, mptIssuanceId, 'validated')
       expect(holding).toBeDefined()
       expect(holding?.MPTAmount ?? '0').toBe('0')
     } finally {
@@ -49,22 +57,36 @@ describe('governance', () => {
       const governance = await setupGovernance(client, netCfg, mptIssuanceId)
       const recipient = await setupAuthorizedHolder(client, netCfg, mptIssuanceId)
 
-      await submitMultisigned(
-        client,
-        buildMptPaymentTx(issuer.address, governance.address, mptIssuanceId, '1000'),
-        issuer.signers.slice(0, issuer.quorum),
-      )
+      await client
+        .forAccount(issuer.address)
+        .tx.payment({
+          Destination: governance.address,
+          Amount: { mpt_issuance_id: mptIssuanceId, value: '1000' },
+        })
+        .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
 
-      await submitMultisigned(
-        client,
-        buildMptPaymentTx(governance.address, recipient.address, mptIssuanceId, '400'),
-        governance.signers.slice(0, governance.quorum),
-      )
+      await client
+        .forAccount(governance.address)
+        .tx.payment({
+          Destination: recipient.address,
+          Amount: { mpt_issuance_id: mptIssuanceId, value: '400' },
+        })
+        .multisignAndSubmit(localSigners(governance.signers, governance.quorum))
 
-      const recipientMpt = await readMptHolding(client, recipient.address, mptIssuanceId)
+      const recipientMpt = await fetchMPTokenOrUndefined(
+        client,
+        recipient.address,
+        mptIssuanceId,
+        'validated',
+      )
       expect(recipientMpt?.MPTAmount).toBe('400')
 
-      const governanceMpt = await readMptHolding(client, governance.address, mptIssuanceId)
+      const governanceMpt = await fetchMPTokenOrUndefined(
+        client,
+        governance.address,
+        mptIssuanceId,
+        'validated',
+      )
       expect(governanceMpt?.MPTAmount).toBe('600')
     } finally {
       await client.disconnect()

@@ -20,8 +20,12 @@ describe('ledger reads', () => {
   it('keeps a readiness lookup failure distinct from a missing holding', async () => {
     const request = vi.spyOn(Client.prototype, 'request')
     request.mockRejectedValueOnce(new RippledError('Not found', { error: 'entryNotFound' }))
-    expect(await getMptHolding('rHolder', 'issuance')).toEqual({ authorized: false, balanceRaw: '0', locked: false })
+    expect(await getMptHolding('rHolder', 'issuance')).toEqual({
+      authorized: false,
+      balanceRaw: '0',
+      locked: false,
+    })
     request.mockRejectedValueOnce(new Error('Offline'))
-    await expect(destinationReadinessWarning('rHolder', 'issuance', 'CRBN')).rejects.toThrow('Offline')
+    await expect(destinationReadinessWarning('rSource', 'rHolder', 'issuance')).rejects.toThrow('Offline')
   })
 })

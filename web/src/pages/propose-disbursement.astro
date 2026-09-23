@@ -68,7 +68,7 @@ import Layout from '../layouts/Layout.astro'
         return
       }
       try {
-        const warning = await destinationReadinessWarning(destination, mptIssuanceId, config.token.ticker)
+        const warning = await destinationReadinessWarning(governance.address, destination, mptIssuanceId)
         if (warning) {
           statusMessage(destinationWarning, 'info', `\u26a0\ufe0f ${warning}`)
           destinationWarning.style.display = 'block'
@@ -76,7 +76,8 @@ import Layout from '../layouts/Layout.astro'
           destinationWarning.style.display = 'none'
         }
       } catch {
-        destinationWarning.style.display = 'none'
+        destinationWarning.textContent = 'Could not check token eligibility. Try again before signing.'
+        destinationWarning.style.display = 'block'
       }
     }
     destinationInput.addEventListener('blur', checkDestination)

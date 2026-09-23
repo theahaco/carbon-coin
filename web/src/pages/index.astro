@@ -94,8 +94,7 @@ import { withBase } from '../lib/paths'
   import { loadPublicConfig, isIssuerSigner, isGovernanceSigner } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
   import { ghostsigSign, GhostsigError } from '../lib/ghostsig'
-  import { buildMptAuthorizeTx, buildMptPaymentTx } from '../lib/tx'
-  import { getOutstandingSupplyRaw, getMptHolding, getXrpBalanceDrops, isAccountFunded, destinationReadinessWarning, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
+  import { getClient, getOutstandingSupplyRaw, getMptHolding, getXrpBalanceDrops, isAccountFunded, destinationReadinessWarning, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
   import { toGton, fromGton } from '../lib/gton'
 
   let connectedAddress: string | undefined
@@ -157,7 +156,7 @@ import { withBase } from '../lib/paths'
     button.addEventListener('click', async () => {
       button.disabled = true
       try {
-        const tx = buildMptAuthorizeTx(connectedAddress!, mptIssuanceId)
+        const tx = (await getClient()).forAccount(connectedAddress!).tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).toJSON()
         const result = await ghostsigSign({ payload: { ...tx }, address: connectedAddress!, submit: true })
         statusMessage(authorizeArea, 'success', `Authorized! (tx <a href="${TESTNET_EXPLORER_BASE}/transactions/${result.hash}" target="_blank" rel="noopener noreferrer">${result.hash}</a>)`)
         sendCard.style.display = 'block'
@@ -222,7 +221,7 @@ import { withBase } from '../lib/paths'
         return
       }
       try {
-        const warning = await destinationReadinessWarning(destination, config.mptIssuanceId, config.token.ticker)
+        const warning = await destinationReadinessWarning(connectedAddress!, destination, config.mptIssuanceId)
         if (warning) {
           statusMessage(sendDestinationWarning, 'info', `\u26a0\ufe0f ${warning}`)
           sendDestinationWarning.style.display = 'block'
@@ -230,7 +229,8 @@ import { withBase } from '../lib/paths'
           sendDestinationWarning.style.display = 'none'
         }
       } catch {
-        sendDestinationWarning.style.display = 'none'
+        sendDestinationWarning.textContent = 'Could not check token eligibility. Try again before signing.'
+        sendDestinationWarning.style.display = 'block'
       }
     }
     sendDestinationInput.addEventListener('blur', checkSendDestination)
@@ -244,7 +244,9 @@ import { withBase } from '../lib/paths'
       await checkSendDestination()
       try {
         const amountRaw = fromGton(amountInput)
-        const tx = buildMptPaymentTx(connectedAddress, destination, config.mptIssuanceId, amountRaw)
+        const tx = (await getClient()).forAccount(connectedAddress).tx.payment({
+          Destination: destination, Amount: { mpt_issuance_id: config.mptIssuanceId, value: amountRaw },
+        }).toJSON()
         const submitButton = sendForm.querySelector('button[type="submit"]') as HTMLButtonElement
         submitButton.disabled = true
         const result = await ghostsigSign({ payload: { ...tx }, address: connectedAddress, submit: true })

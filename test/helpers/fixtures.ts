@@ -1,5 +1,5 @@
 import { Client, Wallet } from 'xrpl'
-import { connectClient, withWalletClient } from '../../src/lib/client.js'
+import { connectClient } from '../../src/lib/client.js'
 import { fundNewWallet, fundSignerWallets } from '../../src/lib/fund.js'
 import { establishMultisigAndDisableMasterKey } from '../../src/lib/accountSetup.js'
 import { MPT_ISSUANCE_FLAGS } from '../../src/lib/mpt.js'
@@ -23,7 +23,11 @@ export function testEnv(wsUrl: string): NodeJS.ProcessEnv {
   }
 }
 
-async function toAccountState(wallet: Wallet, signers: AccountState['signers'], quorum: number): Promise<AccountState> {
+async function toAccountState(
+  wallet: Wallet,
+  signers: AccountState['signers'],
+  quorum: number,
+): Promise<AccountState> {
   return { address: wallet.address, seed: wallet.seed!, signers, quorum }
 }
 
@@ -31,21 +35,25 @@ async function toAccountState(wallet: Wallet, signers: AccountState['signers'], 
  * Funds and fully configures an issuer account (single-sig issuance, then
  * multisig + disabled master key) exactly like `setup-issuer.ts`.
  */
-export async function setupIssuer(client: Client, network: NetworkConfig, env: NodeJS.ProcessEnv): Promise<{ issuer: AccountState; mptIssuanceId: string }> {
+export async function setupIssuer(
+  client: Client,
+  network: NetworkConfig,
+  env: NodeJS.ProcessEnv,
+): Promise<{ issuer: AccountState; mptIssuanceId: string }> {
   const issuerWallet = await fundNewWallet(client, network)
   const signers = await fundSignerWallets(client, network, SIGNER_COUNT)
 
   const metadataHex = buildMptMetadataHex(readTokenMetadataConfig(env))
-  const mptIssuanceId = await withWalletClient(client, issuerWallet, async (signing) => {
-    const issued = await signing.tx.mpTokenIssuanceCreate({
+  const signing = client.withWallet(issuerWallet)
+  const issued = await signing.tx
+    .mpTokenIssuanceCreate({
       MPTokenMetadata: metadataHex,
       Flags: MPT_ISSUANCE_FLAGS,
-    }).signAndSubmit()
-    const id = issued.result.meta.mpt_issuance_id
-    if (!id) throw new Error('MPTokenIssuanceCreate did not return mpt_issuance_id')
-    await establishMultisigAndDisableMasterKey(signing, signers, SIGNER_QUORUM)
-    return id
-  })
+    })
+    .signAndSubmit()
+  const mptIssuanceId = issued.result.meta.mpt_issuance_id
+  if (!mptIssuanceId) throw new Error('MPTokenIssuanceCreate did not return mpt_issuance_id')
+  await establishMultisigAndDisableMasterKey(signing, signers, SIGNER_QUORUM)
 
   return { issuer: await toAccountState(issuerWallet, signers, SIGNER_QUORUM), mptIssuanceId }
 }
@@ -54,24 +62,30 @@ export async function setupIssuer(client: Client, network: NetworkConfig, env: N
  * Funds and fully configures a governance account (single-sig authorize,
  * then multisig + disabled master key) exactly like `setup-governance.ts`.
  */
-export async function setupGovernance(client: Client, network: NetworkConfig, mptIssuanceId: string): Promise<AccountState> {
+export async function setupGovernance(
+  client: Client,
+  network: NetworkConfig,
+  mptIssuanceId: string,
+): Promise<AccountState> {
   const governanceWallet = await fundNewWallet(client, network)
   const signers = await fundSignerWallets(client, network, SIGNER_COUNT)
 
-  await withWalletClient(client, governanceWallet, async (signing) => {
-    await signing.tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).signAndSubmit()
-    await establishMultisigAndDisableMasterKey(signing, signers, SIGNER_QUORUM)
-  })
+  const signing = client.withWallet(governanceWallet)
+  await signing.tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).signAndSubmit()
+  await establishMultisigAndDisableMasterKey(signing, signers, SIGNER_QUORUM)
 
   return toAccountState(governanceWallet, signers, SIGNER_QUORUM)
 }
 
 /** Funds a plain holder wallet and authorizes it to hold the given MPT issuance. */
-export async function setupAuthorizedHolder(client: Client, network: NetworkConfig, mptIssuanceId: string): Promise<Wallet> {
+export async function setupAuthorizedHolder(
+  client: Client,
+  network: NetworkConfig,
+  mptIssuanceId: string,
+): Promise<Wallet> {
   const wallet = await fundNewWallet(client, network)
-  await withWalletClient(client, wallet, async (signing) => {
-    await signing.tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).signAndSubmit()
-  })
+  const signing = client.withWallet(wallet)
+  await signing.tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).signAndSubmit()
   return wallet
 }
 

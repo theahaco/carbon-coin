@@ -1,10 +1,9 @@
+import { localSigners } from '../../src/lib/multisig.js'
+import { MPTokenIssuanceSetFlags } from 'xrpl'
 import { MPTokenFlags } from 'xrpl'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { submitMultisigned } from '../../src/lib/multisig.js'
-import { buildClawbackTx, buildMptLockTx, buildMptPaymentTx } from '../../src/lib/mpt.js'
 import { startLocalNetwork, type LocalNetworkHandle } from '../helpers/localNetwork.js'
 import { connectClient, setupAuthorizedHolder, setupIssuer, testEnv } from '../helpers/fixtures.js'
-
 
 describe('freeze and clawback', () => {
   let network: LocalNetworkHandle
@@ -25,9 +24,22 @@ describe('freeze and clawback', () => {
       const holder = await setupAuthorizedHolder(client, netCfg, mptIssuanceId)
       const otherHolder = await setupAuthorizedHolder(client, netCfg, mptIssuanceId)
 
-      await submitMultisigned(client, buildMptPaymentTx(issuer.address, holder.address, mptIssuanceId, '1000'), issuer.signers.slice(0, issuer.quorum))
+      await client
+        .forAccount(issuer.address)
+        .tx.payment({
+          Destination: holder.address,
+          Amount: { mpt_issuance_id: mptIssuanceId, value: '1000' },
+        })
+        .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
 
-      await submitMultisigned(client, buildMptLockTx(issuer.address, mptIssuanceId, true, holder.address), issuer.signers.slice(0, issuer.quorum))
+      await client
+        .forAccount(issuer.address)
+        .tx.mpTokenIssuanceSet({
+          MPTokenIssuanceID: mptIssuanceId,
+          Flags: MPTokenIssuanceSetFlags.tfMPTLock,
+          Holder: holder.address,
+        })
+        .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
 
       const lockedMpt = await client.command.accountObjects({ account: holder.address, type: 'mptoken' })
       const lockedFlags = lockedMpt.result.account_objects[0]?.Flags ?? 0
@@ -35,13 +47,27 @@ describe('freeze and clawback', () => {
 
       // A locked holder's balance can't be transferred elsewhere. `holder` is a
       // plain (non-multisig) wallet, so it signs with its own regular key.
-      const blockedTransferTx = await client.autofill(buildMptPaymentTx(holder.address, otherHolder.address, mptIssuanceId, '100'))
+      const blockedTransferTx = await client
+        .forAccount(holder.address)
+        .tx.payment({
+          Destination: otherHolder.address,
+          Amount: { mpt_issuance_id: mptIssuanceId, value: '100' },
+        })
+        .prepare()
       const signedBlockedTransfer = holder.sign(blockedTransferTx)
       const blockedTransferResult = await client.trySubmitAndWait(signedBlockedTransfer.tx_blob)
       expect(blockedTransferResult.ok).toBe(false)
-      if (!blockedTransferResult.ok) expect(blockedTransferResult.error).toMatchObject({ engineResult: 'tecLOCKED' })
+      if (!blockedTransferResult.ok)
+        expect(blockedTransferResult.error).toMatchObject({ engineResult: 'tecLOCKED' })
 
-      await submitMultisigned(client, buildMptLockTx(issuer.address, mptIssuanceId, false, holder.address), issuer.signers.slice(0, issuer.quorum))
+      await client
+        .forAccount(issuer.address)
+        .tx.mpTokenIssuanceSet({
+          MPTokenIssuanceID: mptIssuanceId,
+          Flags: MPTokenIssuanceSetFlags.tfMPTUnlock,
+          Holder: holder.address,
+        })
+        .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
 
       const unlockedMpt = await client.command.accountObjects({ account: holder.address, type: 'mptoken' })
       const unlockedFlags = unlockedMpt.result.account_objects[0]?.Flags ?? 0
@@ -58,13 +84,18 @@ describe('freeze and clawback', () => {
       const { issuer, mptIssuanceId } = await setupIssuer(client, netCfg, env)
       const holder = await setupAuthorizedHolder(client, netCfg, mptIssuanceId)
 
-      await submitMultisigned(client, buildMptPaymentTx(issuer.address, holder.address, mptIssuanceId, '1000'), issuer.signers.slice(0, issuer.quorum))
+      await client
+        .forAccount(issuer.address)
+        .tx.payment({
+          Destination: holder.address,
+          Amount: { mpt_issuance_id: mptIssuanceId, value: '1000' },
+        })
+        .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
 
-      await submitMultisigned(
-        client,
-        buildClawbackTx(issuer.address, mptIssuanceId, holder.address, '300'),
-        issuer.signers.slice(0, issuer.quorum),
-      )
+      await client
+        .forAccount(issuer.address)
+        .tx.clawback({ Holder: holder.address, Amount: { mpt_issuance_id: mptIssuanceId, value: '300' } })
+        .multisignAndSubmit(localSigners(issuer.signers, issuer.quorum))
 
       const holderMpt = await client.command.accountObjects({ account: holder.address, type: 'mptoken' })
       expect(holderMpt.result.account_objects[0]?.MPTAmount).toBe('700')
