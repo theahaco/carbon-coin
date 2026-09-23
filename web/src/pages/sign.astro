@@ -2,192 +2,388 @@
 import Layout from '../layouts/Layout.astro'
 ---
 
-<Layout title="Sign a Proposal">
-  <div class="inline-disclaimer">
-    This page decodes and previews a pending mint or disbursement proposal. The decoded transaction fields (and then
-    GhostSig's own passkey prompt) are what's actually reviewed and signed — never trust a link's surrounding text
-    alone.
+<Layout title="Co-sign" active="sign">
+  <div class="page-head">
+    <span class="eyebrow">Next keyholder</span>
+    <h1 class="h1-inner">Co-sign</h1>
   </div>
 
-  <div id="page-error"></div>
+  <div id="page-error" class="status error" role="alert"></div>
 
-  <section class="card" id="paste-card">
-    <h2>Open a proposal</h2>
-    <p style="font-family: system-ui, sans-serif; font-size: 0.85rem;">
-      Normally you'll arrive here via a link someone sent you. If a query string ever gets mangled by an email or
-      chat client, paste the transaction blob or JSON below instead.
+  <section id="open-card" class="card" hidden>
+    <h2 class="card-title">Open a proposal</h2>
+    <p class="body-2">
+      Keyholders arrive here from a signing link or QR code. If a chat app mangled the link, paste the transaction blob
+      (hex) or JSON instead.
     </p>
     <div class="field">
-      <label for="manual-input">Transaction blob (hex) or JSON</label>
-      <input id="manual-input" placeholder="Paste here" />
+      <label for="manual-input">Transaction blob or JSON</label>
+      <textarea id="manual-input" class="input" spellcheck="false" autocomplete="off"></textarea>
     </div>
-    <button id="manual-load" type="button">Load</button>
+    <div><button id="manual-load" type="button" class="btn btn-secondary">Open proposal</button></div>
   </section>
 
-  <section class="card" id="preview-card" style="display:none;">
-    <h2>Proposal</h2>
-    <div id="preview-body"></div>
-    <div id="destination-warning" style="display:none; margin-top: 0.5rem;"></div>
+  <section id="disconnected-card" class="card" hidden>
+    <p class="result-sentence">A keyholder sent you a proposal to co-sign.</p>
+    <p class="body-2">Connect your passkey wallet to see what it does. Nothing is signed until you confirm.</p>
+    <div><button type="button" class="btn btn-primary btn-lg" data-connect>Connect passkey</button></div>
   </section>
 
-  <section class="card" id="sign-card" style="display:none;">
-    <h2>Sign</h2>
-    <button id="sign-button" type="button" style="display:none;">Sign</button>
-    <div id="result-body" style="margin-top: 1rem;"></div>
+  <section id="wrong-key-card" class="card" hidden>
+    <p id="wrong-key-text"></p>
+    <div><a class="btn btn-secondary" href="/" data-home>Fund overview</a></div>
+  </section>
+
+  <section id="preview" class="stack" hidden>
+    <span class="meta" id="proposed-by"></span>
+
+    <div id="unrecognised" class="stack" hidden>
+      <div class="panel panel-unrec">
+        <span class="panel-label">Unrecognised: do not sign</span>
+        <p class="result-sentence" id="unrecognised-sentence"></p>
+        <p>Decline it and tell the other keyholders. The raw fields are below for the record.</p>
+      </div>
+      <pre class="raw-fields" id="raw-fields"></pre>
+    </div>
+
+    <div id="recognised" class="stack">
+      <div id="off-procedure" class="panel panel-offproc" hidden>
+        <span class="panel-label">Off-procedure</span>
+        <span id="off-procedure-text"></span>
+      </div>
+      <div class="stack-tight">
+        <span class="label">What this does</span>
+        <p class="sign-sentence" id="sign-sentence"></p>
+        <span class="small-muted" id="destination-line"></span>
+      </div>
+      <div id="note"></div>
+      <div id="history-check"></div>
+      <div id="destination-warning"></div>
+    </div>
+
+    <div class="strip-rules" id="seat-strip">
+      <div id="seat-chips"></div>
+      <span id="key-meter"></span>
+    </div>
+
+    <div id="already-signed" class="status" hidden>Your signature is already on this proposal. Pass the link to another keyholder.</div>
+
+    <div class="row-wrap" style="gap:10px">
+      <button id="sign-button" type="button" class="btn btn-primary btn-lg">Co-sign with passkey</button>
+      <button id="decline-button" type="button" class="btn btn-secondary btn-lg" style="padding:0 18px">Decline</button>
+    </div>
+  </section>
+
+  <section id="handoff" hidden></section>
+
+  <section id="submitted" class="panel panel-success" hidden></section>
+
+  <section id="not-completed" class="panel panel-alert" hidden></section>
+
+  <section id="declined" class="card" hidden>
+    <p class="result-sentence">Declined. Nothing was signed.</p>
+    <p class="body-2">Tell the proposer and the other keyholders. The proposal can't go through without enough signatures.</p>
+    <div><a class="btn btn-secondary" href="/" data-home>Fund overview</a></div>
   </section>
 </Layout>
 
 <script>
   import { decode } from 'xrpl'
-  import { loadPublicConfig, isIssuerSigner, isGovernanceSigner } from '../lib/config'
+  import { loadPublicConfig, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
-  import { signCeremonyPayload, buildHandoffMessage } from '../lib/ceremony'
-  import { describePaymentTx } from '../lib/preview'
-  import { destinationReadinessWarning } from '../lib/xrplClient'
+  import { signCeremonyPayload } from '../lib/ceremony'
+  import { describeProposal, type ProposalPreview } from '../lib/preview'
+  import { checkTransfer, getMintHistory, watchProposal, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
+  import { alreadyIssued } from '../lib/procedure'
+  import { formatUnits } from '../lib/units'
   import { urlParamToBlob } from '../lib/blob'
-  import QRCode from 'qrcode'
+  import { brand } from '../brand'
+  import { esc, formatDate, shortAddress } from '../lib/format'
+  import { ROLE_WITH_ARTICLE, keySetAccount, seatFor, seatOn, seatsOf, signerRole } from '../lib/role'
+  import { chipsHtml, contractNoteHtml, keyMeterHtml, problemPanelHtml, readinessHtml, renderHandoff, sentenceHtml } from '../lib/ui'
+  import type { ProblemStatus } from '../lib/outcome'
+  import { withBase } from '../lib/paths'
 
-  function statusMessage(el: HTMLElement, kind: 'info' | 'success' | 'error', text: string) {
-    el.innerHTML = `<div class="status-message ${kind}">${text}</div>`
+  const $ = (id: string) => document.getElementById(id)!
+  const pageError = $('page-error')
+  const signButton = $('sign-button') as HTMLButtonElement
+  const manualInput = $('manual-input') as HTMLTextAreaElement
+
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-home]')) link.href = withBase('/')
+
+  const SECTIONS = ['open-card', 'disconnected-card', 'wrong-key-card', 'preview', 'handoff', 'submitted', 'not-completed', 'declined'] as const
+  function show(...ids: Array<(typeof SECTIONS)[number]>) {
+    for (const id of SECTIONS) $(id).hidden = !ids.includes(id)
   }
-
-  const pasteCard = document.getElementById('paste-card')!
-  const previewCard = document.getElementById('preview-card')!
-  const previewBody = document.getElementById('preview-body')!
-  const destinationWarning = document.getElementById('destination-warning')!
-  const signCard = document.getElementById('sign-card')!
-  const pageError = document.getElementById('page-error')!
-  const signButton = document.getElementById('sign-button') as HTMLButtonElement
-  const resultBody = document.getElementById('result-body')!
-  const manualInput = document.getElementById('manual-input') as HTMLInputElement
-  const manualLoad = document.getElementById('manual-load') as HTMLButtonElement
-
-  let decodedTx: Record<string, unknown> | undefined
-  let connectedAddress: string | undefined
 
   function parseInput(raw: string): Record<string, unknown> {
     const trimmed = raw.trim()
-    if (trimmed.startsWith('{')) {
-      return JSON.parse(trimmed) as Record<string, unknown>
-    }
+    if (trimmed.startsWith('{')) return JSON.parse(trimmed) as Record<string, unknown>
     return decode(trimmed) as unknown as Record<string, unknown>
   }
 
-  function updateSignButtonVisibility() {
-    signButton.style.display = decodedTx && connectedAddress ? 'inline-block' : 'none'
+  function signersOf(tx: Record<string, unknown>): string[] {
+    const signers = Array.isArray(tx.Signers) ? (tx.Signers as Array<{ Signer?: { Account?: unknown } }>) : []
+    return signers.map((s) => s.Signer?.Account).filter((a): a is string => typeof a === 'string')
   }
+
+  let tx: Record<string, unknown> | undefined
+  let preview: ProposalPreview | undefined
+  let connectedAddress: string | null = null
+  let settled = false
+  let stopWatching: (() => void) | undefined
+  /** Set when this issue's dealing day already has an issue on the ledger: a second, OFF-PROCEDURE reason. */
+  let duplicateReason: string | undefined
+  let historySeq = 0
 
   async function main() {
     const config = await loadPublicConfig()
-
-    function loadTx(tx: Record<string, unknown>) {
-      decodedTx = tx
-      const preview = describePaymentTx(tx, config.token.ticker, config.issuer?.address, config.governance?.address)
-      previewCard.style.display = 'block'
-      previewBody.innerHTML = `
-        <p><strong>${preview.summary}</strong></p>
-        <p style="font-family: system-ui, sans-serif; font-size: 0.85rem;">
-          From: <span class="mono address">${preview.account}</span><br/>
-          To: <span class="mono address">${preview.destination}</span>
-        </p>
-      `
-      pasteCard.style.display = 'none'
-      signCard.style.display = 'block'
-      updateSignButtonVisibility()
-      destinationWarning.style.display = 'none'
-      if (typeof tx.Account === 'string' && typeof tx.Destination === 'string' && config.mptIssuanceId) {
-        destinationReadinessWarning(tx.Account, tx.Destination, config.mptIssuanceId)
-          .then((warning) => {
-            if (!warning) return
-            statusMessage(destinationWarning, 'info', `\u26a0\ufe0f ${warning}`)
-            destinationWarning.style.display = 'block'
-          })
-          .catch(() => {
-            destinationWarning.textContent = 'Could not check token eligibility. Try again before signing.'
-            destinationWarning.style.display = 'block'
-          })
-      }
+    const mptIssuanceId = requireMptIssuanceId(config)
+    const ctx = {
+      ticker: config.token.ticker,
+      mptIssuanceId,
+      issuer: config.issuer?.address,
+      desk: config.governance?.address,
     }
 
-    const params = new URLSearchParams(window.location.search)
-    const blobParam = params.get('b')
-    if (blobParam) {
-      try {
-        const hexBlob = urlParamToBlob(blobParam)
-        loadTx(parseInput(hexBlob))
-      } catch (err) {
-        statusMessage(previewBody, 'error', `Couldn't decode the transaction in this link: ${err instanceof Error ? err.message : String(err)}`)
-        previewCard.style.display = 'block'
+    function renderPreview(address: string) {
+      if (!tx || !preview) return
+      const signed = new Set(signersOf(tx))
+      const unrecognised = preview.kind === 'unrecognised'
+      $('unrecognised').hidden = !unrecognised
+      $('recognised').hidden = unrecognised
+      $('seat-strip').hidden = unrecognised
+
+      const first = signersOf(tx)[0]
+      if (unrecognised || !preview.keySet) {
+        // Name a published seat even when the transaction matches no procedure.
+        const firstSeat = first ? seatFor(config, first) : undefined
+        $('proposed-by').textContent = firstSeat
+          ? `Proposed by the ${firstSeat.name}${firstSeat.keySet === 'desk' ? ' seat' : ''}`
+          : first
+            ? `Signed so far by ${shortAddress(first)}`
+            : 'Not signed by anyone yet'
+        $('unrecognised-sentence').textContent = preview.sentence
+        $('raw-fields').textContent = preview.rawFields.map(([key, value]) => `${key}: ${value}`).join('\n')
+        signButton.hidden = true
+        $('already-signed').hidden = true
+        return
       }
+
+      const keySet = preview.keySet
+      const account = keySetAccount(config, keySet)
+      const quorum = account?.quorum ?? 2
+      const proposer = first ? seatOn(config, keySet, first) : undefined
+      $('proposed-by').textContent = proposer
+        ? `Proposed by the ${proposer.name}${keySet === 'desk' ? ' seat' : ''}`
+        : first
+          ? `Proposed by ${shortAddress(first)}, which isn't a published ${brand.keySets[keySet].label} seat`
+          : 'Not signed by anyone yet'
+
+      const reasons = [preview.offProcedure, duplicateReason].filter((reason): reason is string => Boolean(reason))
+      $('off-procedure').hidden = reasons.length === 0
+      $('off-procedure-text').textContent = `The transaction is valid, but ${reasons[0] ?? ''}${reasons
+        .slice(1)
+        .map((reason) => ` Also, ${reason}`)
+        .join('')} Check with the proposer before you sign.`
+      $('sign-sentence').innerHTML = sentenceHtml(preview.sentence)
+      const destination = preview.destination ?? ''
+      const destinationName =
+        destination === ctx.desk ? ' (the Dealing Desk)' : destination === ctx.issuer ? ' (the Register)' : ''
+      $('destination-line').innerHTML = destination ? `To <span class="address">${esc(destination)}</span>${esc(destinationName)}` : ''
+      $('note').innerHTML = preview.note ? contractNoteHtml(preview.note, ctx.ticker, { compact: true }) : ''
+
+      $('seat-chips').innerHTML = chipsHtml(seatsOf(config, keySet), { signed, you: address, emphasiseYou: false })
+      $('key-meter').innerHTML = keyMeterHtml(keySet, signed.size, quorum)
+      const alreadySigned = signed.has(address)
+      $('already-signed').hidden = !alreadySigned
+      signButton.hidden = alreadySigned
     }
 
-    manualLoad.addEventListener('click', () => {
-      try {
-        loadTx(parseInput(manualInput.value))
-      } catch (err) {
-        statusMessage(previewBody, 'error', `Couldn't parse that input: ${err instanceof Error ? err.message : String(err)}`)
-        previewCard.style.display = 'block'
+    function render() {
+      if (settled) return
+      if (!tx || !preview) {
+        show('open-card')
+        return
       }
-    })
+      if (!connectedAddress) {
+        show('disconnected-card')
+        return
+      }
+      if (preview.kind !== 'unrecognised' && preview.keySet && !seatOn(config, preview.keySet, connectedAddress)) {
+        const role = signerRole(config, connectedAddress)
+        $('wrong-key-text').textContent = `This proposal needs a ${brand.keySets[preview.keySet].label}. You're connected as ${ROLE_WITH_ARTICLE[role]}, so you can't sign it.`
+        show('wrong-key-card')
+        return
+      }
+      renderPreview(connectedAddress)
+      show('preview')
+    }
 
-    onConnectionChange((address) => {
-      connectedAddress = address ?? undefined
-      if (address) {
-        const recognized = isIssuerSigner(config, address) || isGovernanceSigner(config, address)
-        if (!recognized) {
-          statusMessage(
-            pageError,
-            'error',
-            `Connected as <span class="mono address">${address}</span> — not on either published signer list. GhostSig will refuse to sign unless this address is on the account's live SignerList.`,
-          )
-        } else {
-          pageError.innerHTML = ''
-        }
-      } else {
-        pageError.innerHTML = ''
-      }
-      updateSignButtonVisibility()
-    })
+    function checkDestination(proposal: ProposalPreview) {
+      const warning = $('destination-warning')
+      warning.innerHTML = ''
+      // Units returned to the Register are cancelled; the issuer never holds an MPToken, so skip the check.
+      if (proposal.kind === 'unrecognised' || !proposal.destination || proposal.destination === ctx.issuer) return
+      const source = proposal.account === ctx.desk ? 'The Dealing Desk' : 'The sending account'
+      checkTransfer(proposal.account, proposal.destination, mptIssuanceId, { source, amount: proposal.amountRaw })
+        .then((notice) => {
+          if (notice) warning.innerHTML = readinessHtml(notice)
+        })
+        .catch(() => {
+          warning.innerHTML = '<div class="status">Could not check the destination. Try again before signing.</div>'
+        })
+    }
+
+    /**
+     * The co-signer's own already-issued check: an issue for a dealing day
+     * that already has an issue on the ledger (other than this very
+     * transaction) is flagged OFF-PROCEDURE.
+     */
+    function checkDuplicateDay(proposal: ProposalPreview, sequence: unknown) {
+      const seq = ++historySeq
+      duplicateReason = undefined
+      const note = $('history-check')
+      note.innerHTML = ''
+      const day = proposal.day
+      if (proposal.kind !== 'issue' || !day || !ctx.issuer) return
+      getMintHistory(ctx.issuer, mptIssuanceId)
+        .then((records) => {
+          if (seq !== historySeq) return
+          const issued = alreadyIssued(records, day, sequence)
+          if (!issued) return
+          const when = issued.date ? ` on ${formatDate(issued.date)}` : ''
+          duplicateReason = `dealing day ${day} was already issued${when} (${formatUnits(issued.amountRaw)} ${ctx.ticker}), so this would put a second set of units in issue for the same day.`
+          render()
+        })
+        .catch(() => {
+          if (seq !== historySeq) return
+          note.innerHTML = `<div class="status">Couldn't check whether dealing day ${esc(day)} was already issued. Check the register ledger before you sign.</div>`
+        })
+    }
+
+    function load(decoded: Record<string, unknown>) {
+      tx = decoded
+      preview = describeProposal(decoded, ctx)
+      pageError.textContent = ''
+      checkDestination(preview)
+      checkDuplicateDay(preview, decoded.Sequence)
+      render()
+    }
+
+    function showSubmitted(proposal: ProposalPreview, quorum: number, hash: string | undefined, state: 'submitted' | 'confirmed') {
+      settled = true
+      const text =
+        state === 'confirmed'
+          ? "Confirmed on the XRPL testnet. It's now in the public register ledger."
+          : 'Submitted to the XRPL testnet. Waiting for it to validate…'
+      const panel = $('submitted')
+      panel.innerHTML = `
+        <span class="panel-label">${quorum} of ${quorum} keys · Submitted</span>
+        <p class="result-sentence">${sentenceHtml(proposal.doneSentence)}</p>
+        <p class="body-2">${esc(text)}</p>
+        <div class="row-wrap">
+          <a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>
+          ${hash ? `<a class="btn btn-secondary" href="${esc(`${TESTNET_EXPLORER_BASE}/transactions/${hash}`)}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a>` : ''}
+        </div>`
+      show('submitted')
+    }
+
+    /** Failed on the ledger, superseded or unreadable: an alert panel, never the success panel or the past-tense line. */
+    function showNotCompleted(proposal: ProposalPreview, status: ProblemStatus) {
+      settled = true
+      $('not-completed').innerHTML = problemPanelHtml(
+        status,
+        proposal.sentence,
+        `<a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>`,
+      )
+      show('not-completed')
+    }
+
+    function watch(proposal: ProposalPreview, quorum: number, fallbackHash?: string) {
+      if (!tx || typeof tx.Sequence !== 'number') return
+      stopWatching?.()
+      stopWatching = watchProposal(tx, (status) => {
+        if (status.status === 'done') showSubmitted(proposal, quorum, status.hash ?? fallbackHash, 'confirmed')
+        else showNotCompleted(proposal, status)
+      })
+    }
 
     signButton.addEventListener('click', async () => {
-      if (!decodedTx || !connectedAddress) return
+      if (!tx || !preview || !connectedAddress || !preview.keySet || preview.kind === 'unrecognised') return
+      const proposal = preview
+      const keySet = preview.keySet
+      const quorum = keySetAccount(config, keySet)?.quorum ?? 2
+      const address = connectedAddress
+      pageError.textContent = ''
       signButton.disabled = true
+      signButton.classList.add('is-waiting')
+      signButton.textContent = 'Waiting for your passkey…'
       try {
-        const preview = describePaymentTx(decodedTx, config.token.ticker, config.issuer?.address, config.governance?.address)
-        const outcome = await signCeremonyPayload(decodedTx, connectedAddress)
-        if (outcome.status === 'submitted') {
-          statusMessage(resultBody, 'success', `Quorum met — submitted! (tx hash <span class="mono">${outcome.hash}</span>)`)
-        } else if (outcome.status === 'handoff') {
-          const message = buildHandoffMessage(preview, outcome.shareUrl)
-          resultBody.innerHTML = `
-            <div class="status-message info">${outcome.quorumStatus}</div>
-            <p>Relay this link to the next signer:</p>
-            <div class="field"><input readonly value="${message}" id="handoff-message" /></div>
-            <button type="button" id="copy-handoff">Copy message</button>
-            <div class="qr-wrapper"><img id="handoff-qr" alt="QR code linking to the sign page" /></div>
-          `
-          const qrImg = document.getElementById('handoff-qr') as HTMLImageElement
-          qrImg.src = await QRCode.toDataURL(outcome.shareUrl)
-          document.getElementById('copy-handoff')!.addEventListener('click', async () => {
-            await navigator.clipboard.writeText(message)
-          })
-        } else {
-          statusMessage(
-            resultBody,
-            'error',
-            `${outcome.message}<br/><br/>If this proposal has already been fully signed and submitted, this error (an expired or already-used sequence number) is expected — check the issuer/governance account's recent transactions on the explorer.`,
-          )
+        const outcome = await signCeremonyPayload(tx, address)
+        if (outcome.status === 'error') {
+          pageError.textContent = `${outcome.message} If this proposal was already signed and submitted, that's expected (its sequence is used): check the register ledger.`
+          return
         }
+        if (outcome.status === 'submitted') {
+          showSubmitted(proposal, quorum, outcome.hash, 'submitted')
+          watch(proposal, quorum, outcome.hash)
+          return
+        }
+        settled = true
+        const signed = new Set([...signersOf(tx), address])
+        const handoff = $('handoff')
+        show('handoff')
+        await renderHandoff(handoff, {
+          keySet,
+          seats: seatsOf(config, keySet),
+          signed,
+          quorum,
+          relay: proposal.sentence,
+          shareUrl: outcome.shareUrl,
+        })
+        watch(proposal, quorum)
       } catch (err) {
-        statusMessage(resultBody, 'error', err instanceof Error ? err.message : String(err))
+        pageError.textContent = err instanceof Error ? err.message : String(err)
       } finally {
         signButton.disabled = false
+        signButton.classList.remove('is-waiting')
+        signButton.textContent = 'Co-sign with passkey'
       }
+    })
+
+    $('decline-button').addEventListener('click', () => {
+      settled = true
+      stopWatching?.()
+      show('declined')
+    })
+
+    $('manual-load').addEventListener('click', () => {
+      try {
+        load(parseInput(manualInput.value))
+      } catch (err) {
+        pageError.textContent = `Couldn't read that transaction: ${err instanceof Error ? err.message : String(err)}`
+      }
+    })
+
+    const blobParam = new URLSearchParams(window.location.search).get('b')
+    if (blobParam) {
+      try {
+        load(parseInput(urlParamToBlob(blobParam)))
+      } catch (err) {
+        pageError.textContent = `Couldn't decode the transaction in this link: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+
+    onConnectionChange((address) => {
+      connectedAddress = address
+      render()
     })
   }
 
+  window.addEventListener('pagehide', () => stopWatching?.())
+
   main().catch((err) => {
-    statusMessage(previewBody, 'error', err instanceof Error ? err.message : String(err))
-    previewCard.style.display = 'block'
+    pageError.textContent = err instanceof Error ? err.message : String(err)
   })
 </script>

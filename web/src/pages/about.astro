@@ -1,0 +1,62 @@
+---
+import Layout from '../layouts/Layout.astro'
+import { brand } from '../brand'
+---
+
+<Layout title={`About ${brand.classLabel}`} active="about">
+  <div class="page-head">
+    <span class="eyebrow">About</span>
+    <h1 class="h1-inner">About {brand.classLabel}</h1>
+    <p class="body-2">
+      {brand.name} is a fictional evergreen real-estate fund. {brand.classLabel} is a tokenised share class of it, running
+      on the XRP Ledger testnet for demonstration.
+    </p>
+  </div>
+
+  <section class="note" aria-labelledby="terms-title">
+    <h2 class="note-head note-title" id="terms-title" style="display:block;margin:0">Redemption terms</h2>
+    <dl class="note-body" style="margin:0">
+      {
+        brand.redemptionTerms.map(({ term, value }) => (
+          <div class="note-row">
+            <dt class="note-key">{term}</dt>
+            <dd class="note-value" style="margin:0;text-align:right">{value}</dd>
+          </div>
+        ))
+      }
+    </dl>
+    <p class="note-foot" style="font-size:14px;line-height:1.45">
+      The fund owns property. Units can take months to redeem, and tokenising them doesn't change that.
+    </p>
+  </section>
+
+  <section class="prose">
+    <h2>How dealing works</h2>
+    <p>
+      Dealing is in two stages. On each monthly dealing day the Register issues units to the Dealing Desk against cleared
+      cash, and the Desk sells them on to the investors who ordered them at the same NAV. On redemption the Desk buys units
+      back and the Register cancels them. This is ordinary UK fund practice for a manager's box (FCA CP25/28 §3.6–3.7).
+    </p>
+    <p>
+      Live fund tokens on the XRP Ledger today use single-stage direct issuance to investors. {brand.classLabel} shows the
+      two-stage model on the same native controls.
+    </p>
+    <p>
+      Each stage needs two of three keys, and the two key sets are held by different firms. Two keys issue the units. Two
+      different keys deal them. Every step, including any skipped one, is on a public ledger.
+    </p>
+
+    <h2>Dealing suspension</h2>
+    <p>
+      The Register can suspend dealing for the whole class. When it does, the Dealing tile on the overview
+      reads <span class="suspended-word">SUSPENDED</span>, and the Dealing day and Deliver units pages don't propose
+      issues or deliveries until it lifts.
+    </p>
+
+    <h2>Not an offer</h2>
+    <p>
+      {brand.name}, its keyholders and its figures are fictional. Nothing here is an offer, a recommendation or a
+      statement of performance. NAV and cash figures are illustrative.
+    </p>
+  </section>
+</Layout>

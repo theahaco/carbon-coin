@@ -1,8 +1,8 @@
 {
-  "name": "carbon-coin-web",
+  "name": "xrpl-token-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Static, frontend-only Astro site for the Carbon Coin MPToken demo, signed via GhostSig (ghostsig.dev) in the browser -- no server, no secrets.",
+  "description": "Static, frontend-only Astro site for the MPToken fund-dealing demo, signed via GhostSig (ghostsig.dev) in the browser -- no server, no secrets.",
   "type": "module",
   "engines": {
     "node": ">=22"

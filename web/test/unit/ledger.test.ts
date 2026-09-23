@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client, RippledError } from 'xrpl'
-import { destinationReadinessWarning, getMptHolding, getXrpBalanceDrops } from '../../src/lib/xrplClient'
+import { checkTransfer, getMptHolding, getXrpBalanceDrops } from '../../src/lib/xrplClient'
 
 beforeEach(() => {
   vi.spyOn(Client.prototype, 'connect').mockResolvedValue()
@@ -26,6 +26,6 @@ describe('ledger reads', () => {
       locked: false,
     })
     request.mockRejectedValueOnce(new Error('Offline'))
-    await expect(destinationReadinessWarning('rSource', 'rHolder', 'issuance')).rejects.toThrow('Offline')
+    await expect(checkTransfer('rSource', 'rHolder', 'issuance', { source: 'The Dealing Desk' })).rejects.toThrow('Offline')
   })
 })

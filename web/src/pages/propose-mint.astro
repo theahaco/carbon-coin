@@ -2,159 +2,342 @@
 import Layout from '../layouts/Layout.astro'
 ---
 
-<Layout title="Propose a Mint">
-  <div class="inline-disclaimer">
-    Minting is a 2-of-3 multisig action on the issuer account. Connect with an address on the issuer's signer list to
-    propose and sign the first signature.
+<Layout title="Dealing day" active="dealing">
+  <div class="page-head">
+    <span class="eyebrow register">Register keys</span>
+    <h1 class="h1-inner">Dealing day</h1>
+    <p class="body-2">Issue the units that cleared orders buy at today's NAV to the Dealing Desk.</p>
   </div>
 
-  <div id="page-error"></div>
+  <div id="page-error" class="status error" role="alert"></div>
 
-  <section class="card">
-    <h2>Propose a mint</h2>
+  <section id="non-signer" class="card" hidden></section>
 
-    <div id="history-area" style="margin-top: 1rem;"></div>
+  <section id="propose" class="stack" hidden>
+    <div id="suspended" class="panel panel-alert" hidden>
+      <span class="panel-label">Dealing suspended</span>
+      <span>The Register has suspended dealing for the class. No issues are proposed until it lifts.</span>
+    </div>
 
-    <form id="mint-form" style="margin-top: 1rem; display:none;">
-      <div class="field">
-        <label for="mint-amount">Amount to mint (Gton)</label>
-        <input id="mint-amount" name="amount" placeholder="0" required />
+    <div class="field">
+      <label for="day-input">Dealing day</label>
+      <input id="day-input" class="input day" autocomplete="off" spellcheck="false" placeholder="YYYY-MM" maxlength="7" />
+      <span class="small-muted" id="day-hint">Format YYYY-MM</span>
+    </div>
+
+    <div id="history-warning" class="status" hidden></div>
+
+    <div id="duplicate" class="panel panel-alert" hidden>
+      <span class="panel-label">Already issued</span>
+      <span id="duplicate-text"></span>
+    </div>
+
+    <div id="note"></div>
+
+    <details class="stack-tight">
+      <summary class="small-muted" style="cursor:pointer">Adjust the units</summary>
+      <div class="field" style="margin-top:10px">
+        <label for="units-input">Units to issue</label>
+        <input id="units-input" class="input" inputmode="decimal" autocomplete="off" />
+        <span class="small-muted" id="units-hint">Pre-filled from the contract note. A different figure is flagged to the co-signer.</span>
       </div>
-      <div class="field">
-        <label for="mint-period">Period label (e.g. a year)</label>
-        <input id="mint-period" name="period" required />
-      </div>
-      <button type="submit">Sign proposal</button>
-    </form>
+    </details>
+
+    <div class="stack-tight" style="gap:8px">
+      <span class="body-2" style="font-size:14px" id="seat-line"></span>
+      <div id="seat-chips"></div>
+    </div>
+
+    <div><button id="propose-button" type="button" class="btn btn-primary btn-lg">Sign with passkey and propose</button></div>
   </section>
 
-  <section class="card" id="result-card" style="display:none;">
-    <h2>Result</h2>
-    <div id="result-body"></div>
+  <section id="handoff" hidden></section>
+
+  <section id="quorum" class="panel panel-success" hidden></section>
+
+  <section id="not-completed" class="panel panel-alert" hidden></section>
+
+  <section id="history" class="stack-tight" style="gap:0" hidden>
+    <h2 class="section-title" style="margin:8px 0 10px">Past dealing days</h2>
+    <div id="history-rows"></div>
   </section>
 </Layout>
 
 <script>
-  import { loadPublicConfig, isIssuerSigner, requireIssuer, requireGovernance, requireMptIssuanceId } from '../lib/config'
+  import { loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
   import { buildProposalPaymentTx } from '../lib/tx'
-  import { signCeremonyPayload, buildHandoffMessage } from '../lib/ceremony'
-  import { describePaymentTx } from '../lib/preview'
-  import { getMintHistory, suggestNextMintPeriod } from '../lib/xrplClient'
-  import { toGton, fromGton } from '../lib/gton'
-  import QRCode from 'qrcode'
+  import { signCeremonyPayload } from '../lib/ceremony'
+  import { describeProposal } from '../lib/preview'
+  import {
+    getIssuanceState,
+    getMintHistory,
+    getMptHolding,
+    suggestNextMintPeriod,
+    watchProposal,
+    TESTNET_EXPLORER_BASE,
+    type MintRecord,
+  } from '../lib/xrplClient'
+  import { contractNote, formatDealingDay, isDealingDay, monthName, noteShortForm, parseDealingMonth } from '../lib/dealing'
+  import { matchesContractNote } from '../lib/ledger'
+  import { esc, formatDate } from '../lib/format'
+  import { numberWord, seatOn, seatsOf, signerRole } from '../lib/role'
+  import { formatUnits, parseUnits } from '../lib/units'
+  import { chipsHtml, contractNoteHtml, nonSignerHtml, problemPanelHtml, renderHandoff, sentenceHtml } from '../lib/ui'
+  import type { ProblemStatus } from '../lib/outcome'
+  import { withBase } from '../lib/paths'
 
-  const pageError = document.getElementById('page-error')!
-  const historyArea = document.getElementById('history-area')!
-  const mintForm = document.getElementById('mint-form') as HTMLFormElement
-  const periodInput = document.getElementById('mint-period') as HTMLInputElement
-  const resultCard = document.getElementById('result-card')!
-  const resultBody = document.getElementById('result-body')!
-
-  function statusMessage(el: HTMLElement, kind: 'info' | 'success' | 'error', text: string) {
-    el.innerHTML = `<div class="status-message ${kind}">${text}</div>`
-  }
+  const $ = (id: string) => document.getElementById(id)!
+  const pageError = $('page-error')
+  const dayInput = $('day-input') as HTMLInputElement
+  const unitsInput = $('units-input') as HTMLInputElement
+  const proposeButton = $('propose-button') as HTMLButtonElement
 
   let connectedAddress: string | undefined
+  let stopWatching: (() => void) | undefined
+  let proposed = false
+  /** The issuance is locked: dealing is suspended, so the propose button stays disabled. */
+  let suspended = false
+
+  function normalise(label: string): string {
+    const month = parseDealingMonth(label)
+    return month ? formatDealingDay(month) : label.trim()
+  }
 
   async function main() {
     const config = await loadPublicConfig()
     const issuer = requireIssuer(config)
     const governance = requireGovernance(config)
     const mptIssuanceId = requireMptIssuanceId(config)
+    const ticker = config.token.ticker
+    const seats = seatsOf(config, 'register')
 
-    try {
-      const history = await getMintHistory(issuer.address, mptIssuanceId)
-      periodInput.value = suggestNextMintPeriod(history)
-      if (history.length > 0) {
-        const heading = document.createElement('p')
-        heading.textContent = 'Previous mints on record:'
-        const table = document.createElement('table')
-        const header = table.createTHead().insertRow()
-        for (const title of ['Period', 'Amount']) {
-          const cell = document.createElement('th')
-          cell.textContent = title
-          header.append(cell)
-        }
-        const body = table.createTBody()
-        for (const record of history) {
-          const row = body.insertRow()
-          row.insertCell().textContent = record.period
-          row.insertCell().textContent = `${toGton(record.amountRaw)} ${config.token.ticker}`
-        }
-        historyArea.replaceChildren(heading, table)
+    let history: MintRecord[] | undefined
+    const historyRead = getMintHistory(issuer.address, mptIssuanceId).then(
+      (records) => {
+        history = [...records].sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0))
+      },
+      () => {
+        history = undefined
+        const warning = $('history-warning')
+        warning.textContent = "The past dealing days couldn't be read. Check the register ledger for this day before proposing."
+        warning.hidden = false
+      },
+    )
+
+    function renderHistory() {
+      const rows = $('history-rows')
+      if (!history || history.length === 0) {
+        rows.innerHTML = `<p class="meta" style="padding:12px 0;border-top:1px solid var(--brand-rule)">${history ? 'No dealing days issued yet.' : 'Unavailable right now.'}</p>`
+        return
       }
-    } catch {
-      historyArea.textContent = 'Mint history is unavailable. Verify the period before proposing another mint.'
-      periodInput.value = String(new Date().getFullYear())
+      rows.innerHTML = history
+        .map((record) => {
+          const day = normalise(record.period)
+          const figures = matchesContractNote(day, record.amountRaw)
+            ? `${noteShortForm(contractNote(day)).replace(' ÷ NAV ', ' ÷ ')} · illustrative`
+            : 'not from the contract note'
+          return `<div class="history-row">
+            <span class="history-day">${esc(day)}</span>
+            <span class="history-units">${esc(formatUnits(record.amountRaw))} ${esc(ticker)}</span>
+            <span class="history-meta">${record.date ? esc(formatDate(record.date)) : ''}</span>
+            <span class="history-meta right">${esc(figures)}</span>
+          </div>`
+        })
+        .join('')
     }
+
+    /** Re-renders the contract note, units and the already-issued check for the entered day. */
+    function renderDay() {
+      const day = dayInput.value.trim()
+      const valid = isDealingDay(day)
+      $('day-hint').textContent = valid || day === '' ? 'Format YYYY-MM' : 'Use the format YYYY-MM, e.g. 2026-10'
+      $('day-hint').style.color = valid || day === '' ? '' : 'var(--brand-alert)'
+      proposeButton.disabled = !valid || suspended
+      if (!valid) {
+        $('note').innerHTML = ''
+        $('duplicate').hidden = true
+        return
+      }
+      const note = contractNote(day)
+      $('note').innerHTML = contractNoteHtml(note, ticker)
+      unitsInput.value = formatUnits(note.unitsRaw)
+      renderUnitsHint()
+      const issued = history?.find((record) => normalise(record.period) === day)
+      $('duplicate').hidden = !issued
+      if (issued) {
+        const when = issued.date ? ` on ${formatDate(issued.date)}` : ''
+        $('duplicate-text').textContent = `Dealing day ${day} was issued${when} (${formatUnits(issued.amountRaw)} ${ticker}). Proposing it again would put a second set of units in issue for the same day.`
+      }
+    }
+
+    function renderUnitsHint() {
+      const hint = $('units-hint')
+      try {
+        const raw = parseUnits(unitsInput.value)
+        const matches = isDealingDay(dayInput.value.trim()) && contractNote(dayInput.value.trim()).unitsRaw === BigInt(raw)
+        hint.textContent = matches
+          ? 'Pre-filled from the contract note. A different figure is flagged to the co-signer.'
+          : "This differs from the contract note. The co-signer will see it flagged as off-procedure."
+        hint.style.color = matches ? '' : 'var(--brand-alert)'
+      } catch (err) {
+        hint.textContent = err instanceof Error ? err.message : String(err)
+        hint.style.color = 'var(--brand-alert)'
+      }
+    }
+
+    let dayTouched = false
+    dayInput.addEventListener('input', () => {
+      dayTouched = true
+      renderDay()
+    })
+    unitsInput.addEventListener('input', renderUnitsHint)
+
+    function renderSeats(address: string) {
+      const seat = seatOn(config, 'register', address)!
+      const more = issuer.quorum - 1
+      const moreText =
+        more === 1 ? 'One more Register seat completes the issue.' : `${numberWord(more).replace(/^./, (c) => c.toUpperCase())} more Register seats complete the issue.`
+      $('seat-line').textContent = `You sign first, as the ${seat.name}. ${moreText}`
+      $('seat-chips').innerHTML = chipsHtml(seats, { you: address })
+    }
+
+    async function showQuorum(day: string, doneSentence: string, hash?: string) {
+      stopWatching?.()
+      $('handoff').hidden = true
+      $('propose').hidden = true
+      const panel = $('quorum')
+      const year = parseDealingMonth(day)?.year
+      let inventory = ''
+      try {
+        const desk = await getMptHolding(governance.address, mptIssuanceId)
+        inventory = ` Desk inventory is ${formatUnits(desk.balanceRaw)} until the Desk delivers today's orders.`
+      } catch {
+        inventory = " Desk inventory holds the new units until the Desk delivers today's orders."
+      }
+      const bay =
+        year === new Date().getFullYear()
+          ? `The ${monthName(day)} bay is now lit on the fund overview.`
+          : `Dealing day ${day} is now in the register ledger.`
+      panel.innerHTML = `
+        <span class="panel-label">${issuer.quorum} of ${issuer.quorum} keys · Issued</span>
+        <p class="result-sentence">${sentenceHtml(doneSentence)}</p>
+        <p class="body-2">${esc(bay + inventory)}</p>
+        <div class="row-wrap">
+          <a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>
+          ${hash ? `<a class="btn btn-secondary" href="${esc(`${TESTNET_EXPLORER_BASE}/transactions/${hash}`)}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a>` : ''}
+        </div>`
+      panel.hidden = false
+    }
+
+    /** The proposal settled without going through: drop the stale handoff card and say why. */
+    function showNotCompleted(status: ProblemStatus, sentence: string) {
+      stopWatching?.()
+      $('handoff').hidden = true
+      const panel = $('not-completed')
+      panel.innerHTML = problemPanelHtml(status, sentence, '<button type="button" class="btn btn-primary" data-restart>Start a new proposal</button>')
+      panel.hidden = false
+      panel.querySelector('[data-restart]')?.addEventListener('click', () => {
+        panel.hidden = true
+        proposed = false
+        $('propose').hidden = !connectedAddress || !seatOn(config, 'register', connectedAddress)
+      })
+    }
+
+    proposeButton.addEventListener('click', async () => {
+      if (!connectedAddress) return
+      pageError.textContent = ''
+      const address = connectedAddress
+      const day = dayInput.value.trim()
+      let amountRaw: string
+      try {
+        if (!isDealingDay(day)) throw new Error('Enter the dealing day as YYYY-MM.')
+        amountRaw = parseUnits(unitsInput.value)
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+        return
+      }
+      proposeButton.disabled = true
+      proposeButton.classList.add('is-waiting')
+      proposeButton.textContent = 'Waiting for your passkey…'
+      try {
+        const tx = await buildProposalPaymentTx(issuer.address, governance.address, mptIssuanceId, amountRaw, issuer.quorum, {
+          type: 'mint-period',
+          data: day,
+        })
+        const preview = describeProposal(tx, { ticker, mptIssuanceId, issuer: issuer.address, desk: governance.address })
+        const outcome = await signCeremonyPayload(tx, address)
+        if (outcome.status === 'error') throw new Error(outcome.message)
+        proposed = true
+        if (outcome.status === 'submitted') {
+          await showQuorum(day, preview.doneSentence, outcome.hash)
+          return
+        }
+        $('propose').hidden = true
+        const handoff = $('handoff')
+        handoff.hidden = false
+        await renderHandoff(handoff, {
+          keySet: 'register',
+          seats,
+          signed: new Set([address]),
+          quorum: issuer.quorum,
+          relay: preview.sentence,
+          shareUrl: outcome.shareUrl,
+        })
+        if (typeof tx.Sequence === 'number') {
+          stopWatching = watchProposal(tx, (status) => {
+            if (status.status === 'done') void showQuorum(day, preview.doneSentence, status.hash)
+            else showNotCompleted(status, preview.sentence)
+          })
+        }
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+      } finally {
+        proposeButton.disabled = !isDealingDay(dayInput.value.trim()) || suspended
+        proposeButton.classList.remove('is-waiting')
+        proposeButton.textContent = 'Sign with passkey and propose'
+      }
+    })
 
     onConnectionChange((address) => {
       connectedAddress = address ?? undefined
-      if (!address) {
-        mintForm.style.display = 'none'
-        pageError.innerHTML = ''
+      const seat = address ? seatOn(config, 'register', address) : undefined
+      const nonSigner = $('non-signer')
+      if (!seat) {
+        nonSigner.innerHTML = nonSignerHtml('register', signerRole(config, address))
+        nonSigner.hidden = false
+        $('propose').hidden = true
+        $('history').hidden = true
         return
       }
-      if (isIssuerSigner(config, address)) {
-        mintForm.style.display = 'block'
-        pageError.innerHTML = ''
-      } else {
-        mintForm.style.display = 'none'
-        statusMessage(
-          pageError,
-          'error',
-          `Connected as <span class="mono address">${address}</span> — this address is not on the issuer's published signer list. GhostSig will refuse to sign for the issuer account unless it's on the account's live SignerList.`,
-        )
-      }
+      nonSigner.hidden = true
+      $('history').hidden = false
+      if (!proposed) $('propose').hidden = false
+      renderSeats(seat.address)
     })
 
-    mintForm.addEventListener('submit', async (event) => {
-      event.preventDefault()
-      if (!connectedAddress) return
-      const formData = new FormData(mintForm)
-      const amountInput = String(formData.get('amount') ?? '').trim()
-      const period = String(formData.get('period') ?? '').trim()
-      const submitButton = mintForm.querySelector('button[type="submit"]') as HTMLButtonElement
-      submitButton.disabled = true
-      try {
-        const amountRaw = fromGton(amountInput)
-        const tx = await buildProposalPaymentTx(issuer.address, governance.address, mptIssuanceId, amountRaw, issuer.quorum, {
-          type: 'mint-period',
-          data: period,
-        })
-        const preview = describePaymentTx(tx, config.token.ticker, issuer.address, governance.address)
-        const outcome = await signCeremonyPayload(tx, connectedAddress)
-        resultCard.style.display = 'block'
-        if (outcome.status === 'submitted') {
-          statusMessage(resultBody, 'success', `${preview.summary} Submitted! (tx hash <span class="mono">${outcome.hash}</span>)`)
-        } else if (outcome.status === 'handoff') {
-          const message = buildHandoffMessage(preview, outcome.shareUrl)
-          resultBody.innerHTML = `
-            <div class="status-message info">${preview.summary} ${outcome.quorumStatus}</div>
-            <p>Relay this link to another issuer signer:</p>
-            <div class="field"><input readonly value="${message}" id="handoff-message" /></div>
-            <button type="button" id="copy-handoff">Copy message</button>
-            <div class="qr-wrapper"><img id="handoff-qr" alt="QR code linking to the sign page" /></div>
-          `
-          const qrImg = document.getElementById('handoff-qr') as HTMLImageElement
-          qrImg.src = await QRCode.toDataURL(outcome.shareUrl)
-          document.getElementById('copy-handoff')!.addEventListener('click', async () => {
-            await navigator.clipboard.writeText(message)
-          })
-        } else {
-          statusMessage(resultBody, 'error', outcome.message)
-        }
-      } catch (err) {
-        resultCard.style.display = 'block'
-        statusMessage(resultBody, 'error', err instanceof Error ? err.message : String(err))
-      } finally {
-        submitButton.disabled = false
-      }
-    })
+    // A locked issuance means dealing is suspended: say so and don't propose. A failed read leaves it to the ledger.
+    getIssuanceState(mptIssuanceId).then(
+      (state) => {
+        suspended = Boolean(state.flags.lsfMPTLocked)
+        $('suspended').hidden = !suspended
+        renderDay()
+      },
+      () => undefined,
+    )
+
+    // The current month until the history arrives, then the month after the latest issue.
+    dayInput.value = suggestNextMintPeriod([])
+    renderDay()
+    await historyRead
+    if (!dayTouched) dayInput.value = suggestNextMintPeriod(history ?? [])
+    renderDay()
+    renderHistory()
   }
 
+  window.addEventListener('pagehide', () => stopWatching?.())
+
   main().catch((err) => {
-    statusMessage(pageError, 'error', err instanceof Error ? err.message : String(err))
+    pageError.textContent = err instanceof Error ? err.message : String(err)
   })
 </script>

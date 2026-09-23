@@ -2,7 +2,7 @@ import { encodeMemo, type TextMemo } from 'xrpl'
 import { getClient } from './xrplClient'
 
 /**
- * Carbon Coin's equal-weight policy needs `quorum` signatures. Weighted signer
+ * The demo's equal-weight signer lists need `quorum` signatures. Weighted signer
  * lists must instead budget the actual signature count. GhostSig collects and
  * submits the signatures; the SDK prepares the payload once before handoff.
  * An explicit unbounded ceremony remains valid until its sequence is consumed.

@@ -1,59 +1,97 @@
 ---
 import '../styles/global.css'
 import { withBase } from '../lib/paths'
+import { brand } from '../brand'
+
+export type NavId = 'overview' | 'dealing' | 'deliver' | 'sign' | 'about'
 
 interface Props {
   title: string
+  /** Which nav item is current. */
+  active?: NavId
+  /** The overview uses the wide, two-column page; everything else the 720px inner page. */
+  wide?: boolean
 }
 
-const { title } = Astro.props
+const { title, active, wide = false } = Astro.props
+// Crawlers need an absolute URL. The image carries the band, as the handoff asks.
+const ogImage = Astro.site ? new URL(withBase('/og.png'), Astro.site).href : withBase('/og.png')
+
+// Phase 1: only routes backed by existing features. Admit investor and
+// Register controls arrive with RequireAuth, lock and clawback ceremonies.
+const nav: Array<{ id: NavId; label: string; href: string }> = [
+  { id: 'overview', label: 'Overview', href: '/' },
+  { id: 'dealing', label: 'Dealing day', href: '/propose-mint' },
+  { id: 'deliver', label: 'Deliver units', href: '/propose-disbursement' },
+  { id: 'sign', label: 'Co-sign', href: '/sign' },
+  { id: 'about', label: 'About', href: '/about' },
+]
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
-    <title>{title} · Carbon Coin (testnet demo)</title>
-    <meta
-      name="description"
-      content="Carbon Coin (CRBN): a testnet-only technical demo of the XRP Ledger's native MPToken standard. Not a real financial instrument, not affiliated with the United Nations."
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap"
     />
+    <meta name="theme-color" content="#1F2A33" />
+    <title>{title} · {brand.name} (testnet demo)</title>
+    <meta name="description" content={brand.description} />
+    <meta property="og:title" content={`${title} · ${brand.name} (testnet demo)`} />
+    <meta property="og:description" content={`${brand.band}. ${brand.description}`} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={`${brand.name}, ${brand.subtitle}. ${brand.band}.`} />
+    <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
-    <div class="disclaimer-banner">
-      <strong>Testnet demo only.</strong> Carbon Coin (CRBN) has no monetary value and is <strong>not affiliated with, endorsed by, or produced by the United Nations</strong>.
-      It exists solely to demonstrate XRPL's native MPToken (XLS-89) token design space.
-    </div>
+    <div class="band" role="note">{brand.band}</div>
     <header class="site-header">
-      <div class="emblem" aria-hidden="true">🌍</div>
-      <div class="site-title">
-        <h1>Carbon Coin</h1>
-        <p>Aligning Long-Term Wealth with Planetary Decarbonization — a fictional demo by the "UN Ministry For The Future"</p>
+      <div class="header-inner">
+        <a class="wordmark" href={withBase('/')}>
+          <span class="wordmark-name">{brand.name}</span>
+          <span class="wordmark-sub">{brand.subtitle}</span>
+        </a>
+        <div class="header-actions">
+          <button id="header-connect" class="btn btn-secondary btn-sm" type="button" data-connect>Connect passkey</button>
+          <span id="header-role" class="role-pill" hidden>
+            <span id="header-role-dot" class="role-dot" data-role="visitor"></span>
+            <span id="header-role-label">Visitor</span>
+          </span>
+          <button id="header-disconnect" class="link-button" type="button" hidden>Disconnect</button>
+        </div>
       </div>
+      <p id="connect-error" class="connect-error" role="alert" hidden></p>
+      <nav class="site-nav" aria-label="Main">
+        {
+          nav.map((item) => (
+            <a
+              class:list={['nav-link', { active: item.id === active }]}
+              href={withBase(item.href)}
+              aria-current={item.id === active ? 'page' : undefined}
+            >
+              {item.label}
+            </a>
+          ))
+        }
+      </nav>
     </header>
-    <nav class="site-nav">
-      <a href={withBase('/')}>Dashboard</a>
-      <a href={withBase('/propose-mint')}>Propose a Mint</a>
-      <a href={withBase('/propose-disbursement')}>Propose a Disbursement</a>
-      <a href={withBase('/sign')}>Sign a Proposal</a>
-      <span class="nav-connect">
-        <span id="header-connect-status">Not connected.</span>
-        <button id="header-connect-button" type="button">Connect with GhostSig</button>
-      </span>
-    </nav>
-    <main>
+    <main class:list={[wide ? 'page-overview' : 'page-inner']}>
       <slot />
     </main>
     <footer class="site-footer">
-      <p>
-        Testnet-only technical demonstration of XRPL's native MPToken standard (XLS-89). No real money, no real carbon
-        credits, no monetary value. "Carbon Coin", "UN Ministry For The Future", and all associated names are
-        fictional and used solely for illustrative purposes — <strong>this project is not affiliated with, endorsed
-        by, or produced by the United Nations</strong> or any of its agencies.
-      </p>
-      <p>Signed entirely in your browser via <a href="https://ghostsig.dev" target="_blank" rel="noopener noreferrer">GhostSig</a>. No server, no seeds, no custodial wallet.</p>
+      <div class="footer-inner">
+        <span>{brand.footer}</span>
+        <a href={withBase('/about')}>Redemption terms</a>
+      </div>
     </footer>
   </body>
 </html>
@@ -61,4 +99,12 @@ const { title } = Astro.props
 <script>
   import { initConnectHeader } from '../lib/connect'
   initConnectHeader()
+
+  // On a phone the nav scrolls sideways; bring the current page's item into view.
+  const nav = document.querySelector<HTMLElement>('.site-nav')
+  const current = nav?.querySelector<HTMLElement>('.nav-link.active')
+  if (nav && current) {
+    const overflow = current.getBoundingClientRect().right - nav.getBoundingClientRect().right
+    if (overflow > 0) nav.scrollLeft += overflow + 10
+  }
 </script>

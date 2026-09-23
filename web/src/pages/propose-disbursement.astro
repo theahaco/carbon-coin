@@ -2,150 +2,373 @@
 import Layout from '../layouts/Layout.astro'
 ---
 
-<Layout title="Propose a Disbursement">
-  <div class="inline-disclaimer">
-    A disbursement is a 2-of-3 multisig action on the governance account. Connect with an address on governance's
-    signer list to propose and sign the first signature.
+<Layout title="Deliver units" active="deliver">
+  <div class="page-head">
+    <span class="eyebrow desk">Dealing Desk keys</span>
+    <h1 class="h1-inner">Deliver units</h1>
+    <p class="body-2">Sell today's issued units to the investors who ordered them, at the same NAV.</p>
   </div>
 
-  <div id="page-error"></div>
+  <div id="page-error" class="status error" role="alert"></div>
 
-  <section class="card">
-    <h2>Propose a disbursement</h2>
+  <section id="non-signer" class="card" hidden></section>
 
-    <form id="disbursement-form" style="margin-top: 1rem; display:none;">
+  <form id="deliver-form" class="stack" novalidate hidden>
+    <div id="suspended" class="panel panel-alert" hidden>
+      <span class="panel-label">Dealing suspended</span>
+      <span>The Register has suspended dealing for the class. No deliveries are proposed until it lifts; the ledger would reject them.</span>
+    </div>
+
+    <div class="inventory-strip">
+      <span class="inventory-label" id="inventory-label">Desk inventory</span>
+      <span class="inventory-value" id="inventory-value">—</span>
+    </div>
+
+    <fieldset class="field" style="border:0;margin:0;padding:0">
+      <legend class="field-label" style="padding:0;margin-bottom:6px">Investor</legend>
+      <div class="picks" id="picks"></div>
+      <label for="destination-input" class="small-muted sr-only" id="destination-label" style="margin-top:4px">Investor address</label>
+      <input id="destination-input" class="input mono" name="destination" placeholder="r…" autocomplete="off" spellcheck="false" />
+    </fieldset>
+
+    <div id="destination-warning"></div>
+
+    <div class="field-grid">
       <div class="field">
-        <label for="disbursement-destination">Destination address</label>
-        <input id="disbursement-destination" name="destination" placeholder="r..." required />
-        <div id="destination-warning" style="display:none; margin-top: 0.5rem;"></div>
+        <label for="units-input">Units</label>
+        <input id="units-input" class="input" name="units" inputmode="decimal" placeholder="0.000" autocomplete="off" />
       </div>
       <div class="field">
-        <label for="disbursement-amount">Amount (Gton)</label>
-        <input id="disbursement-amount" name="amount" placeholder="0" required />
+        <label for="ref-input">Order reference (memo)</label>
+        <input id="ref-input" class="input mono" name="ref" maxlength="64" autocomplete="off" spellcheck="false" />
       </div>
-      <button type="submit">Sign proposal</button>
-    </form>
-  </section>
+    </div>
 
-  <section class="card" id="result-card" style="display:none;">
-    <h2>Result</h2>
-    <div id="result-body"></div>
-  </section>
+    <div><button id="deliver-button" type="submit" class="btn btn-primary btn-lg">Sign delivery with passkey</button></div>
+  </form>
+
+  <section id="handoff" hidden></section>
+
+  <section id="delivered" class="panel panel-success" hidden></section>
+
+  <section id="not-completed" class="panel panel-alert" hidden></section>
 </Layout>
 
 <script>
-  import { loadPublicConfig, isGovernanceSigner, requireGovernance, requireMptIssuanceId } from '../lib/config'
+  import { isValidClassicAddress } from 'xrpl'
+  import { loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
   import { buildProposalPaymentTx } from '../lib/tx'
-  import { signCeremonyPayload, buildHandoffMessage } from '../lib/ceremony'
-  import { describePaymentTx } from '../lib/preview'
-  import { destinationReadinessWarning } from '../lib/xrplClient'
-  import { fromGton } from '../lib/gton'
-  import QRCode from 'qrcode'
+  import { signCeremonyPayload } from '../lib/ceremony'
+  import { describeProposal } from '../lib/preview'
+  import {
+    checkTransfer,
+    getIssuanceState,
+    getMptHolding,
+    getOutgoingMptPayments,
+    mintPeriodOf,
+    watchProposal,
+    type MptPayment,
+  } from '../lib/xrplClient'
+  import { currentDealingDay, formatDealingDay, parseDealingMonth } from '../lib/dealing'
+  import { orderRefOf } from '../lib/ledger'
+  import { esc, formatShortDate, shortAddress } from '../lib/format'
+  import { seatOn, seatsOf, signerRole } from '../lib/role'
+  import { formatUnits, parseUnits } from '../lib/units'
+  import { nonSignerHtml, problemPanelHtml, readinessHtml, renderHandoff, sentenceHtml } from '../lib/ui'
+  import type { ProblemStatus } from '../lib/outcome'
 
-  const pageError = document.getElementById('page-error')!
-  const disbursementForm = document.getElementById('disbursement-form') as HTMLFormElement
-  const destinationInput = document.getElementById('disbursement-destination') as HTMLInputElement
-  const destinationWarning = document.getElementById('destination-warning')!
-  const resultCard = document.getElementById('result-card')!
-  const resultBody = document.getElementById('result-body')!
-
-  function statusMessage(el: HTMLElement, kind: 'info' | 'success' | 'error', text: string) {
-    el.innerHTML = `<div class="status-message ${kind}">${text}</div>`
-  }
+  const $ = (id: string) => document.getElementById(id)!
+  const pageError = $('page-error')
+  const form = $('deliver-form') as HTMLFormElement
+  const destinationInput = $('destination-input') as HTMLInputElement
+  const unitsInput = $('units-input') as HTMLInputElement
+  const refInput = $('ref-input') as HTMLInputElement
+  const deliverButton = $('deliver-button') as HTMLButtonElement
+  const warning = $('destination-warning')
 
   let connectedAddress: string | undefined
+  let stopWatching: (() => void) | undefined
+  let inFlight = false
+  /** Set while the readiness check says the ledger would reject this delivery; the sign button stays disabled. */
+  let destinationBlocked = false
+  /** The issuance is locked: dealing is suspended. */
+  let suspended = false
+  let checkSeq = 0
 
   async function main() {
     const config = await loadPublicConfig()
+    const issuer = requireIssuer(config)
     const governance = requireGovernance(config)
     const mptIssuanceId = requireMptIssuanceId(config)
+    const ticker = config.token.ticker
+    const seats = seatsOf(config, 'desk')
 
+    let deliveries: MptPayment[] = []
+    let dealingDay = currentDealingDay()
+
+    async function refreshInventory() {
+      try {
+        const desk = await getMptHolding(governance.address, mptIssuanceId)
+        $('inventory-value').textContent = `${formatUnits(desk.balanceRaw)} ${ticker}`
+        return desk.balanceRaw
+      } catch {
+        $('inventory-value').textContent = 'unavailable'
+        return undefined
+      }
+    }
+
+    function suggestOrderRef(): string {
+      const prefix = `ORD-${dealingDay}-`
+      const used = deliveries.map((p) => orderRefOf(p.memos) ?? '').filter((ref) => ref.startsWith(prefix)).length
+      return `${prefix}${String(used + 1).padStart(3, '0')}`
+    }
+
+    function renderPicks() {
+      const seen = new Set<string>()
+      const known = deliveries.filter((p) => {
+        if (p.destination === issuer.address || seen.has(p.destination)) return false
+        seen.add(p.destination)
+        return true
+      })
+      $('picks').innerHTML = known
+        .slice(0, 5)
+        .map(
+          (p) => `<label class="pick">
+            <input type="radio" name="investor" value="${esc(p.destination)}" />
+            <span class="pick-main"><span class="radio" aria-hidden="true"></span><span class="pick-addr" title="${esc(p.destination)}">${esc(shortAddress(p.destination))}</span></span>
+            <span class="pick-status">${p.date ? `Last delivery ${esc(formatShortDate(p.date))}` : 'Delivered before'}</span>
+          </label>`,
+        )
+        .join('')
+      const label = $('destination-label')
+      label.textContent = known.length > 0 ? 'Or another investor address' : 'Investor address'
+      label.classList.toggle('sr-only', known.length === 0)
+      for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="investor"]')) {
+        radio.addEventListener('change', () => {
+          destinationInput.value = radio.value
+          void checkDestination()
+        })
+      }
+    }
+
+    function setBlocked(blocked: boolean) {
+      destinationBlocked = blocked
+      deliverButton.disabled = destinationBlocked || suspended
+    }
+
+    /** The units typed so far as a raw amount, if they parse, so the check covers Desk inventory too. */
+    function typedAmount(): string | undefined {
+      try {
+        return parseUnits(unitsInput.value)
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * Checks the destination (and, once units are entered, Desk inventory).
+     * A blocked result disables the sign button: the ledger would reject the
+     * delivery as things stand. A failed read leaves it enabled.
+     */
     async function checkDestination() {
+      const seq = ++checkSeq
       const destination = destinationInput.value.trim()
-      if (!destination) {
-        destinationWarning.style.display = 'none'
+      warning.innerHTML = ''
+      setBlocked(false)
+      if (!destination) return
+      if (!isValidClassicAddress(destination)) {
+        warning.innerHTML = `<div class="status error">That isn't a valid XRPL address.</div>`
         return
       }
       try {
-        const warning = await destinationReadinessWarning(governance.address, destination, mptIssuanceId)
-        if (warning) {
-          statusMessage(destinationWarning, 'info', `\u26a0\ufe0f ${warning}`)
-          destinationWarning.style.display = 'block'
-        } else {
-          destinationWarning.style.display = 'none'
+        const notice = await checkTransfer(governance.address, destination, mptIssuanceId, {
+          source: 'The Dealing Desk',
+          amount: typedAmount(),
+        })
+        if (seq !== checkSeq) return
+        if (notice) {
+          warning.innerHTML = readinessHtml(notice, '<div><button type="button" class="link-button" data-recheck>Check again</button></div>')
+          warning.querySelector('[data-recheck]')?.addEventListener('click', () => void checkDestination())
+          setBlocked(notice.blocked)
         }
       } catch {
-        destinationWarning.textContent = 'Could not check token eligibility. Try again before signing.'
-        destinationWarning.style.display = 'block'
+        if (seq !== checkSeq) return
+        warning.innerHTML = `<div class="status">Could not check the destination. Try again before signing.</div>`
       }
     }
-    destinationInput.addEventListener('blur', checkDestination)
+
+    destinationInput.addEventListener('input', () => {
+      // A new address needs a new check (on blur); drop the old result meanwhile.
+      checkSeq++
+      warning.innerHTML = ''
+      setBlocked(false)
+      const value = destinationInput.value.trim()
+      for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="investor"]')) radio.checked = radio.value === value
+    })
+    destinationInput.addEventListener('blur', () => void checkDestination())
+    unitsInput.addEventListener('change', () => {
+      if (destinationInput.value.trim()) void checkDestination()
+    })
+
+    async function showDelivered(doneSentence: string) {
+      stopWatching?.()
+      $('handoff').hidden = true
+      form.hidden = true
+      const left = await refreshInventory()
+      const panel = $('delivered')
+      panel.innerHTML = `
+        <span class="panel-label">${governance.quorum} of ${governance.quorum} keys · Delivered</span>
+        <p class="result-sentence">${sentenceHtml(doneSentence)}</p>
+        <div class="success-row"><span class="body-2">Desk inventory left today</span><span style="font-weight:500">${left === undefined ? 'unavailable' : `${esc(formatUnits(left))} ${esc(ticker)}`}</span></div>
+        <div><button type="button" class="btn btn-primary" id="next-delivery">Next delivery</button></div>`
+      panel.hidden = false
+      $('next-delivery').addEventListener('click', () => {
+        panel.hidden = true
+        inFlight = false
+        form.reset()
+        warning.innerHTML = ''
+        setBlocked(false)
+        refInput.value = suggestOrderRef()
+        form.hidden = !connectedAddress || !seatOn(config, 'desk', connectedAddress)
+      })
+    }
+
+    /** The proposal settled without going through: drop the stale handoff card and say why. */
+    function showNotCompleted(status: ProblemStatus, sentence: string) {
+      stopWatching?.()
+      $('handoff').hidden = true
+      void refreshInventory()
+      const panel = $('not-completed')
+      panel.innerHTML = problemPanelHtml(status, sentence, '<button type="button" class="btn btn-primary" data-restart>Start a new delivery</button>')
+      panel.hidden = false
+      panel.querySelector('[data-restart]')?.addEventListener('click', () => {
+        panel.hidden = true
+        inFlight = false
+        warning.innerHTML = ''
+        form.hidden = !connectedAddress || !seatOn(config, 'desk', connectedAddress)
+      })
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      if (!connectedAddress) return
+      pageError.textContent = ''
+      const address = connectedAddress
+      const destination = destinationInput.value.trim()
+      const orderRef = refInput.value.trim()
+      let amountRaw: string
+      try {
+        if (!isValidClassicAddress(destination)) throw new Error("Enter the investor's XRPL address.")
+        if (destination === governance.address) throw new Error('The Dealing Desk cannot deliver to itself.')
+        amountRaw = parseUnits(unitsInput.value)
+        if (!orderRef) throw new Error('Enter the order reference. It goes on the ledger as the delivery memo.')
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+        return
+      }
+      await checkDestination()
+      if (destinationBlocked || suspended) return
+      deliverButton.disabled = true
+      deliverButton.classList.add('is-waiting')
+      deliverButton.textContent = 'Waiting for your passkey…'
+      try {
+        const tx = await buildProposalPaymentTx(governance.address, destination, mptIssuanceId, amountRaw, governance.quorum, {
+          type: 'order-ref',
+          data: orderRef,
+        })
+        const preview = describeProposal(tx, { ticker, mptIssuanceId, issuer: issuer.address, desk: governance.address })
+        const outcome = await signCeremonyPayload(tx, address)
+        if (outcome.status === 'error') throw new Error(outcome.message)
+        inFlight = true
+        const pending: MptPayment = { destination, amountRaw, memos: [{ type: 'order-ref', data: orderRef }] }
+        deliveries = [pending, ...deliveries]
+        if (outcome.status === 'submitted') {
+          await showDelivered(preview.doneSentence)
+          return
+        }
+        form.hidden = true
+        const handoff = $('handoff')
+        handoff.hidden = false
+        await renderHandoff(handoff, {
+          keySet: 'desk',
+          seats,
+          signed: new Set([address]),
+          quorum: governance.quorum,
+          relay: preview.sentence,
+          shareUrl: outcome.shareUrl,
+        })
+        if (typeof tx.Sequence === 'number') {
+          stopWatching = watchProposal(tx, (status) => {
+            if (status.status === 'done') void showDelivered(preview.doneSentence)
+            else {
+              // It never delivered, so its order reference is free again.
+              deliveries = deliveries.filter((payment) => payment !== pending)
+              showNotCompleted(status, preview.sentence)
+            }
+          })
+        }
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+      } finally {
+        deliverButton.disabled = destinationBlocked || suspended
+        deliverButton.classList.remove('is-waiting')
+        deliverButton.textContent = 'Sign delivery with passkey'
+      }
+    })
 
     onConnectionChange((address) => {
       connectedAddress = address ?? undefined
-      if (!address) {
-        disbursementForm.style.display = 'none'
-        pageError.innerHTML = ''
+      const seat = address ? seatOn(config, 'desk', address) : undefined
+      const nonSigner = $('non-signer')
+      if (!seat) {
+        nonSigner.innerHTML = nonSignerHtml('desk', signerRole(config, address))
+        nonSigner.hidden = false
+        form.hidden = true
         return
       }
-      if (isGovernanceSigner(config, address)) {
-        disbursementForm.style.display = 'block'
-        pageError.innerHTML = ''
-      } else {
-        disbursementForm.style.display = 'none'
-        statusMessage(
-          pageError,
-          'error',
-          `Connected as <span class="mono address">${address}</span> — this address is not on governance's published signer list. GhostSig will refuse to sign for the governance account unless it's on the account's live SignerList.`,
-        )
-      }
+      nonSigner.hidden = true
+      if (!inFlight) form.hidden = false
     })
 
-    disbursementForm.addEventListener('submit', async (event) => {
-      event.preventDefault()
-      if (!connectedAddress) return
-      const formData = new FormData(disbursementForm)
-      const destination = String(formData.get('destination') ?? '').trim()
-      const amountInput = String(formData.get('amount') ?? '').trim()
-      const submitButton = disbursementForm.querySelector('button[type="submit"]') as HTMLButtonElement
-      submitButton.disabled = true
-      await checkDestination()
-      try {
-        const amountRaw = fromGton(amountInput)
-        const tx = await buildProposalPaymentTx(governance.address, destination, mptIssuanceId, amountRaw, governance.quorum)
-        const preview = describePaymentTx(tx, config.token.ticker, config.issuer?.address, governance.address)
-        const outcome = await signCeremonyPayload(tx, connectedAddress)
-        resultCard.style.display = 'block'
-        if (outcome.status === 'submitted') {
-          statusMessage(resultBody, 'success', `${preview.summary} Submitted! (tx hash <span class="mono">${outcome.hash}</span>)`)
-        } else if (outcome.status === 'handoff') {
-          const message = buildHandoffMessage(preview, outcome.shareUrl)
-          resultBody.innerHTML = `
-            <div class="status-message info">${preview.summary} ${outcome.quorumStatus}</div>
-            <p>Relay this link to another governance signer:</p>
-            <div class="field"><input readonly value="${message}" id="handoff-message" /></div>
-            <button type="button" id="copy-handoff">Copy message</button>
-            <div class="qr-wrapper"><img id="handoff-qr" alt="QR code linking to the sign page" /></div>
-          `
-          const qrImg = document.getElementById('handoff-qr') as HTMLImageElement
-          qrImg.src = await QRCode.toDataURL(outcome.shareUrl)
-          document.getElementById('copy-handoff')!.addEventListener('click', async () => {
-            await navigator.clipboard.writeText(message)
-          })
-        } else {
-          statusMessage(resultBody, 'error', outcome.message)
-        }
-      } catch (err) {
-        resultCard.style.display = 'block'
-        statusMessage(resultBody, 'error', err instanceof Error ? err.message : String(err))
-      } finally {
-        submitButton.disabled = false
+    // A locked issuance means dealing is suspended: say so and don't propose. A failed read leaves it to the ledger.
+    getIssuanceState(mptIssuanceId).then(
+      (state) => {
+        suspended = Boolean(state.flags.lsfMPTLocked)
+        $('suspended').hidden = !suspended
+        setBlocked(destinationBlocked)
+      },
+      () => undefined,
+    )
+
+    refInput.value = suggestOrderRef()
+    await refreshInventory()
+    const [issues, desk] = await Promise.allSettled([
+      getOutgoingMptPayments(issuer.address, mptIssuanceId),
+      getOutgoingMptPayments(governance.address, mptIssuanceId),
+    ])
+    if (issues.status === 'fulfilled') {
+      const days = issues.value
+        .map((p) => parseDealingMonth(mintPeriodOf(p.memos) ?? ''))
+        .filter((m) => m !== undefined)
+        .map((m) => formatDealingDay(m!))
+        .sort()
+      const latest = days.at(-1)
+      if (latest) {
+        dealingDay = latest
+        $('inventory-label').textContent = `Desk inventory · ${latest}`
       }
-    })
+    }
+    if (desk.status === 'fulfilled') {
+      deliveries = [...desk.value].sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0))
+      renderPicks()
+    }
+    if (!refInput.value || refInput.value === `ORD-${currentDealingDay()}-001`) refInput.value = suggestOrderRef()
   }
 
+  window.addEventListener('pagehide', () => stopWatching?.())
+
   main().catch((err) => {
-    statusMessage(pageError, 'error', err instanceof Error ? err.message : String(err))
+    pageError.textContent = err instanceof Error ? err.message : String(err)
   })
 </script>

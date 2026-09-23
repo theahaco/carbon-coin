@@ -1,7 +1,6 @@
 import { GhostsigError, ghostsigSign } from './ghostsig'
 import { blobToUrlParam } from './blob'
 import { absoluteUrlWithBase } from './paths'
-import type { PaymentPreview } from './preview'
 
 export type CeremonyOutcome =
   | { status: 'submitted'; hash: string; address: string }
@@ -35,9 +34,4 @@ export async function signCeremonyPayload(payload: Record<string, unknown>, addr
     }
     return { status: 'error', message: err instanceof Error ? err.message : String(err) }
   }
-}
-
-/** A full, self-explanatory message for a proposer to relay however they like (chat, email, a shared channel). */
-export function buildHandoffMessage(preview: PaymentPreview, shareUrl: string): string {
-  return `I'm proposing we ${preview.summary.replace(/\.$/, '')} — add your signature: ${shareUrl}`
 }

@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <circle cx="32" cy="32" r="30" fill="#0b2e4f" stroke="#c9a34c" stroke-width="4" />
-  <text x="32" y="42" font-size="32" text-anchor="middle">🌍</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <path d="M0 0h16v16H0z" fill="#F4F1EA" />
+  <path d="M1 2h14v2H1zM2 4h12v12H2zM4 6v3h2V6zm6 0v3h2V6z" fill="#D3C9B5" />
+  <path d="M7 6h2v3H7z" fill="#2F7D6D" />
+  <path d="M6 16v-2a2 2 0 0 1 4 0v2z" fill="#1F2A33" />
 </svg>

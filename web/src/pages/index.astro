@@ -1,266 +1,591 @@
 ---
 import Layout from '../layouts/Layout.astro'
-import { withBase } from '../lib/paths'
+import { brand } from '../brand'
+
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
 ---
 
-<Layout title="Dashboard">
-  <div class="inline-disclaimer">
-    This is a technical demonstration of the XRP Ledger's native MPToken standard (XLS-89) running on the public
-    <strong>XRPL Testnet</strong>. Nothing here has monetary value.
-  </div>
+<Layout title="Fund overview" active="overview" wide>
+  <div id="page-error" class="status error" role="alert"></div>
 
-  <div id="page-error"></div>
-
-  <section class="card" id="connect-card">
-    <h2>Your wallet</h2>
-    <p id="not-connected-hint">Connect with GhostSig (top right) to see your role and balance.</p>
-    <div id="role-ctas" style="display:none;">
-      <a class="button secondary" id="propose-mint-cta" href={withBase('/propose-mint')} style="display:none; margin-right: 0.5rem;">Propose a Mint</a>
-      <a class="button secondary" id="propose-disbursement-cta" href={withBase('/propose-disbursement')} style="display:none;">Propose a Disbursement</a>
+  <section class="grid-hero" aria-labelledby="overview-title">
+    <div class="stack" style="gap:16px">
+      <span class="eyebrow">Fund overview</span>
+      <h1 id="overview-title" class="h1-overview">{brand.fullName}</h1>
+      <p class="lead">{brand.lead} {brand.tagline}</p>
+      <p class="body-2">
+        Once a month, on dealing day, the fund's Register issues exactly the units that cleared orders buy at that day's
+        NAV to the manager's Dealing Desk. The Desk sells each investor their units the same day, at the same price, and
+        ends the day holding none. Each step takes two of three keys, held by different firms, and every signature is
+        public.
+      </p>
     </div>
-    <div id="authorize-area" style="display:none; margin-top: 1rem;"></div>
-  </section>
 
-  <section class="card" id="stats-card">
-    <h2>Live status</h2>
-    <div class="stat-grid">
-      <div class="stat">
-        <div class="label">Outstanding supply</div>
-        <div class="value" id="stat-supply">—</div>
+    <div class="stack" style="gap:14px">
+      <figure class="facade" style="margin:0" aria-label="Façade: one window bay per dealing day of the year">
+        <div class="facade-cornice"></div>
+        <div class="facade-frieze" aria-hidden="true">{brand.frieze}</div>
+        <ol class="facade-bays" id="facade-bays">
+          {
+            months.map((m, i) => (
+              <li class="bay" data-month={i + 1}>
+                <span class="bay-window" />
+                <span class="bay-month">{m}</span>
+              </li>
+            ))
+          }
+        </ol>
+        <div class="facade-door-row"><div class="facade-door" title="The Dealing Desk"></div></div>
+        <div class="facade-plinth"></div>
+      </figure>
+      <div class="split small-muted" style="gap:12px">
+        <span id="facade-caption">Each bay is a dealing day this year. Lit bays have issued.</span>
+        <span>Door: the Dealing Desk</span>
       </div>
-      <div class="stat">
-        <div class="label">Your balance</div>
-        <div class="value" id="stat-balance">—</div>
-      </div>
-      <div class="stat">
-        <div class="label">Your XRP balance</div>
-        <div class="value" id="stat-xrp">—</div>
+
+      <div class="flow" aria-label="How units move">
+        <div class="flow-row">
+          <div class="flow-box register"><strong>Register</strong><span>issues units</span></div>
+          <span class="flow-arrow" aria-hidden="true">→</span>
+          <div class="flow-box desk"><strong>Dealing Desk</strong><span>sells same day</span></div>
+          <span class="flow-arrow" aria-hidden="true">→</span>
+          <div class="flow-box"><strong>Investors</strong><span>named holders</span></div>
+        </div>
+        <div class="flow-row flow-back">
+          <span>cancels</span><span aria-hidden="true">←</span><span>buys back</span><span aria-hidden="true">←</span><span>redeem</span>
+        </div>
       </div>
     </div>
-    <p style="margin-top: 1rem; font-family: system-ui, sans-serif; font-size: 0.85rem;">
-      Issuer: <span id="issuer-address" class="mono address">—</span><br />
-      Governance: <span id="governance-address" class="mono address">—</span>
-    </p>
   </section>
 
-  <section class="card" id="send-card" style="display:none;">
-    <h2>Send</h2>
-    <form id="send-form">
-      <div class="field">
-        <label for="send-destination">Destination address</label>
-        <input id="send-destination" name="destination" placeholder="r..." required />
-        <div id="send-destination-warning" style="display:none; margin-top: 0.5rem;"></div>
+  <section class="grid-body">
+    <div class="stack">
+      <div class="card" id="account-card">
+        <h2 class="card-title">Your account</h2>
+        <div class="stack-tight" style="gap:12px" id="account-body">
+          <p class="body-2">You're viewing as a visitor. Keyholders and investors connect a passkey wallet to see their role.</p>
+          <div><button type="button" class="btn btn-primary" data-connect>Connect passkey</button></div>
+        </div>
       </div>
-      <div class="field">
-        <label for="send-amount">Amount (Gton)</label>
-        <input id="send-amount" name="amount" placeholder="0" required />
-      </div>
-      <button type="submit">Send</button>
-    </form>
-    <div id="send-result"></div>
-  </section>
 
-  <section class="card">
-    <h2>What is this?</h2>
-    <p>
-      <strong>Carbon Coin (CRBN)</strong> is a native XRPL <strong>MPToken</strong> (XLS-89) — a first-class,
-      account-scoped fungible token type distinct from classic trust-line Issued Currencies. It is transferable,
-      lockable (freezable), and clawback-able, with no supply cap and whole-unit balances.
-    </p>
-    <p>
-      Minting new supply and moving funds out of governance both require a <strong>2-of-3 multisig</strong> quorum:
-      no single key can create new tokens or redirect governance's balance alone. Multisig members sign with their
-      own passkey-derived wallet via <a href="https://ghostsig.dev" target="_blank" rel="noopener noreferrer">GhostSig</a> —
-      no seed phrase is ever typed into this page, and nothing here can move funds on its own.
-    </p>
-    <p>
-      Ceremonies (a mint or a disbursement) are proposed and co-signed entirely in the browser: whoever proposes signs
-      first, then relays a link to the next signer (see <a href={withBase('/sign')}>Sign a Proposal</a>). Once enough signatures
-      are collected, GhostSig submits the transaction itself.
-    </p>
-    <p>
-      For background on how Carbon Coin might actually work and the
-      challenges of such a concept, see
-      <a
-        href="https://gist.github.com/chadoh/9386fa1c0db2b1c2268e9202d3ed7463#12-warpdotdev--design-brief-for-poc-engineering-v2-amended"
-        target="_blank"
-        rel="noopener noreferrer">Carbon Coin tokenomic design conversation</a
-      >.
-    </p>
+      <div class="tiles" aria-label="Fund figures">
+        <div class="tile">
+          <span class="tile-label">Units in issue</span>
+          <span class="tile-value" id="tile-issue">—</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">Desk inventory</span>
+          <span class="tile-value" id="tile-desk">—</span>
+          <span class="tile-sub">Should return to 0</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">With investors</span>
+          <span class="tile-value" id="tile-investors">—</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">NAV per unit</span>
+          <span class="tile-value" id="tile-nav">—</span>
+          <span class="tile-sub" id="tile-nav-sub">Illustrative</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">Dealing</span>
+          <span class="tile-value" id="tile-dealing">—</span>
+          <span class="tile-sub" id="tile-dealing-sub"></span>
+        </div>
+      </div>
+
+      <div class="card" style="gap:18px">
+        <h2 class="card-title">Two sets of keys</h2>
+        <div class="keyset">
+          <div class="split">
+            <span class="keyset-name">{brand.keySets.register.name}</span>
+            <span class="keyset-quorum" id="register-quorum">2 of 3</span>
+          </div>
+          <span class="keyset-text">Depositary, registrar and administrator. Issues units and holds the controls.</span>
+          <div class="row-wrap" style="gap:6px" id="register-chips">
+            {seatChips('register').map((name) => <span class="chip">{name}</span>)}
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="keyset desk">
+          <div class="split">
+            <span class="keyset-name">{brand.keySets.desk.name}</span>
+            <span class="keyset-quorum" id="desk-quorum">2 of 3</span>
+          </div>
+          <span class="keyset-text">
+            The manager's box, a separate firm. Sells issued units to investors and buys them back on redemption.
+          </span>
+          <div class="row-wrap" style="gap:6px" id="desk-chips">
+            {seatChips('desk').map((name) => <span class="chip desk">{name}</span>)}
+          </div>
+        </div>
+        <p class="closing-line">
+          Two keys issue the units. Two different keys deal them. Every step, including any skipped one, is on a public
+          ledger.
+        </p>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="ledger">
+        <div class="ledger-head">
+          <h2 class="card-title">Register ledger</h2>
+          <span class="small-muted">Public · XRPL testnet</span>
+        </div>
+        <ol class="ledger-rows" id="ledger-rows">
+          <li class="ledger-empty">Reading the ledger…</li>
+        </ol>
+        <div class="ledger-foot"><a id="ledger-more" href="https://testnet.xrpl.org" target="_blank" rel="noopener noreferrer">Earlier entries on the testnet explorer ↗</a></div>
+      </div>
+
+      <div class="issuers-panel">
+        <span class="eyebrow">For issuers</span>
+        <p id="issuers-text">Issuance and dealing on native XRPL MPT controls. No smart contract.</p>
+        <p class="small-muted" id="issuers-note" hidden></p>
+      </div>
+
+      <details class="drawer">
+        <summary>Technical details</summary>
+        <div class="drawer-body" id="tech-body">
+          <div class="drawer-item">
+            <span id="tech-issuer-label">MPT issuer (Register)</span>
+            <span class="address" id="tech-issuer">—</span>
+          </div>
+          <div class="drawer-item">
+            <span id="tech-desk-label">Dealing Desk account</span>
+            <span class="address" id="tech-desk">—</span>
+          </div>
+          <div class="drawer-item">
+            <span>MPT issuance ID</span>
+            <span class="address" id="tech-issuance">—</span>
+          </div>
+          <div class="drawer-item">
+            <span>MPT issuance flags</span>
+            <span class="mono" id="tech-flags">—</span>
+          </div>
+          <div class="drawer-item" id="tech-you" hidden>
+            <span>Your account</span>
+            <span class="address" id="tech-you-address"></span>
+            <span id="tech-you-xrp"></span>
+          </div>
+          <span>XRP pays network fees only. Testnet XRP comes from the public faucet and has no value.</span>
+          <span>
+            Keyholders sign in the browser with
+            <a href="https://ghostsig.dev" target="_blank" rel="noopener noreferrer">GhostSig</a> passkeys: no server, no seeds. In production the keys would sit in institutional custody; passkeys stand in for it
+            here.
+          </span>
+        </div>
+      </details>
+    </div>
   </section>
 </Layout>
 
 <script>
-  import { loadPublicConfig, isIssuerSigner, isGovernanceSigner } from '../lib/config'
-  import { onConnectionChange } from '../lib/connect'
+  import type { MPTokenIssuanceFlagsInterface } from 'xrpl'
+  import { loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
+  import { onConnectionChange, showRoleInHeader } from '../lib/connect'
   import { ghostsigSign, GhostsigError } from '../lib/ghostsig'
-  import { getClient, getOutstandingSupplyRaw, getMptHolding, getXrpBalanceDrops, isAccountFunded, destinationReadinessWarning, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
-  import { toGton, fromGton } from '../lib/gton'
+  import {
+    getClient,
+    getIssuanceState,
+    getMptHolding,
+    getOutgoingMptPayments,
+    getXrpBalanceDrops,
+    isMasterKeyDisabled,
+    checkTransfer,
+    mintPeriodOf,
+    TESTNET_EXPLORER_BASE,
+    type MptPayment,
+  } from '../lib/xrplClient'
+  import { buildRegisterLedger, lastDeliveryLine, orderRefOf } from '../lib/ledger'
+  import { currentDealingDay, formatDealingDay, formatEuro, illustrativeDealing, parseDealingMonth, suggestNextDealingDay } from '../lib/dealing'
+  import { esc, formatShortDate, joinList } from '../lib/format'
+  import { numberWord, seatFor, seatsOf } from '../lib/role'
+  import { formatUnits, parseUnits } from '../lib/units'
+  import { readinessHtml, statusHtml } from '../lib/ui'
+  import { withBase } from '../lib/paths'
+  import { getStoredAddress } from '../lib/session'
 
-  let connectedAddress: string | undefined
-
+  const LEDGER_ROWS = 8
   const pageError = document.getElementById('page-error')!
-  const notConnectedHint = document.getElementById('not-connected-hint')!
-  const roleCtas = document.getElementById('role-ctas')!
-  const proposeMintCta = document.getElementById('propose-mint-cta') as HTMLAnchorElement
-  const proposeDisbursementCta = document.getElementById('propose-disbursement-cta') as HTMLAnchorElement
-  const authorizeArea = document.getElementById('authorize-area')!
-  const sendCard = document.getElementById('send-card')!
-  const sendForm = document.getElementById('send-form') as HTMLFormElement
-  const sendDestinationInput = document.getElementById('send-destination') as HTMLInputElement
-  const sendDestinationWarning = document.getElementById('send-destination-warning')!
-  const sendResult = document.getElementById('send-result')!
+  const accountBody = document.getElementById('account-body')!
+  const $ = (id: string) => document.getElementById(id)!
 
-  function statusMessage(el: HTMLElement, kind: 'info' | 'success' | 'error', text: string) {
-    el.innerHTML = `<div class="status-message ${kind}">${text}</div>`
+  function errorText(err: unknown): string {
+    return err instanceof GhostsigError ? err.message : err instanceof Error ? err.message : String(err)
   }
 
-  async function refreshStats(mptIssuanceId?: string) {
-    if (!mptIssuanceId) return
+  function explorerTx(hash: string): string {
+    return `${TESTNET_EXPLORER_BASE}/transactions/${hash}`
+  }
+
+  function explorerAccount(address: string): string {
+    return `${TESTNET_EXPLORER_BASE}/accounts/${address}`
+  }
+
+  function accountLink(address: string): string {
+    return `<a href="${esc(explorerAccount(address))}" target="_blank" rel="noopener noreferrer">${esc(address)}</a>`
+  }
+
+  /** Issuance flag names in the handoff's order, from the ledger. */
+  function flagNames(flags: MPTokenIssuanceFlagsInterface): string[] {
+    const names: Array<[keyof MPTokenIssuanceFlagsInterface, string]> = [
+      ['lsfMPTRequireAuth', 'RequireAuth'],
+      ['lsfMPTCanLock', 'CanLock'],
+      ['lsfMPTCanClawback', 'CanClawback'],
+      ['lsfMPTCanTransfer', 'CanTransfer'],
+      ['lsfMPTCanEscrow', 'CanEscrow'],
+      ['lsfMPTCanTrade', 'CanTrade'],
+      ['lsfMPTLocked', 'Locked'],
+    ]
+    return names.filter(([flag]) => flags[flag]).map(([, name]) => name)
+  }
+
+  function renderFacade(periods: string[], next: string) {
+    const now = new Date()
+    const year = now.getFullYear()
+    const lit = new Set(
+      periods
+        .map(parseDealingMonth)
+        .filter((m) => m !== undefined && m.year === year)
+        .map((m) => m!.month),
+    )
+    const nextMonth = parseDealingMonth(next)
+    for (const bay of document.querySelectorAll<HTMLElement>('#facade-bays .bay')) {
+      const month = Number(bay.dataset.month)
+      bay.classList.toggle('lit', lit.has(month))
+      bay.classList.toggle('current', !lit.has(month) && nextMonth?.year === year && nextMonth.month === month)
+    }
+    $('facade-caption').textContent = `Each bay is a ${year} dealing day. Lit bays have issued.`
+  }
+
+  function renderLedger(issuerPayments: MptPayment[], deskPayments: MptPayment[], issuer: string, desk: string, ticker: string) {
+    const rows = buildRegisterLedger({ issuerPayments, deskPayments, issuer, desk, ticker })
+    const list = $('ledger-rows')
+    if (rows.length === 0) {
+      list.innerHTML = '<li class="ledger-empty">No entries yet. The first dealing day\'s issue will appear here.</li>'
+    } else {
+      list.innerHTML = rows
+        .slice(0, LEDGER_ROWS)
+        .map((row) => {
+          const stampClass = row.stamp === 'ISSUE' ? 'issue' : row.stamp === 'DELIVER' ? 'deliver' : ''
+          const inner = `
+            <span class="stamp ${stampClass}">${esc(row.stamp)}</span>
+            <span class="ledger-main">
+              <span class="ledger-title">${esc(row.title)}</span>
+              <span class="ledger-memo">${esc(row.memo)}</span>
+              ${row.offProcedure ? `<span class="ledger-flag">Off-procedure · ${esc(row.offProcedure)}</span>` : ''}
+            </span>
+            <span class="ledger-date">${row.date ? esc(formatShortDate(row.date)) : ''}${row.hash ? ' ↗' : ''}</span>`
+          return row.hash
+            ? `<li><a class="ledger-row" href="${esc(explorerTx(row.hash))}" target="_blank" rel="noopener noreferrer">${inner}</a></li>`
+            : `<li class="ledger-row">${inner}</li>`
+        })
+        .join('')
+    }
+    const more = $('ledger-more') as HTMLAnchorElement
+    more.href = explorerAccount(issuer)
+    more.textContent = rows.length > LEDGER_ROWS ? 'Earlier entries on the testnet explorer ↗' : "The Register's account on the testnet explorer ↗"
+  }
+
+  function renderIssuersPanel(flags: MPTokenIssuanceFlagsInterface, masterDisabled: boolean) {
+    const steps = [
+      flags.lsfMPTRequireAuth ? 'Holder admission' : '',
+      flags.lsfMPTCanLock ? 'stop-transfer' : '',
+      flags.lsfMPTCanClawback ? 'replacement' : '',
+      'issuance',
+    ].filter(Boolean)
+    const controls = [
+      flags.lsfMPTRequireAuth ? 'RequireAuth' : '',
+      flags.lsfMPTCanLock ? 'lock' : '',
+      flags.lsfMPTCanClawback ? 'clawback' : '',
+      masterDisabled ? 'multisig with the master key disabled' : 'multisig',
+    ].filter(Boolean)
+    const subject = joinList(steps)
+    $('issuers-text').textContent = `${subject.charAt(0).toUpperCase()}${subject.slice(1)} on native XRPL MPT controls (${controls.join(', ')}). No smart contract.`
+    const note = $('issuers-note')
+    if (!flags.lsfMPTRequireAuth) {
+      note.textContent = "This demo issuance doesn't set RequireAuth, so any wallet can hold units. A real share class would admit each holder to the register first."
+      note.hidden = false
+    }
+  }
+
+  /** Desk deliveries, newest first; resolves to [] if the history can't be read. */
+  let deliveries: Promise<MptPayment[]> = Promise.resolve([])
+  /** Guards against an older, slower render overwriting a newer one (e.g. a disconnect mid-read). */
+  let renderSeq = 0
+
+  async function renderAccount(address: string | null) {
+    const seq = ++renderSeq
+    const config = await loadPublicConfig()
+    const ticker = config.token.ticker
+    const techYou = $('tech-you')
+    if (!address) {
+      techYou.hidden = true
+      accountBody.innerHTML = `
+        <p class="body-2">You're viewing as a visitor. Keyholders and investors connect a passkey wallet to see their role.</p>
+        <div><button type="button" class="btn btn-primary" data-connect>Connect passkey</button></div>`
+      return
+    }
+    techYou.hidden = false
+    $('tech-you-address').textContent = address
+    $('tech-you-xrp').textContent = ''
+    getXrpBalanceDrops(address)
+      .then((drops) => {
+        $('tech-you-xrp').textContent = drops ? `${(Number(drops) / 1_000_000).toLocaleString('en-GB')} testnet XRP` : 'Not funded on the testnet yet'
+      })
+      .catch(() => {
+        $('tech-you-xrp').textContent = 'XRP balance unavailable'
+      })
+
+    const seat = seatFor(config, address)
+    if (seat) {
+      const account = seat.keySet === 'register' ? config.issuer : config.governance
+      const quorum = account?.quorum ?? 2
+      const total = account?.signers.length ?? 3
+      const setName = seat.keySet === 'register' ? 'Register' : 'Dealing Desk'
+      const tail =
+        seat.keySet === 'register'
+          ? `${capitalise(numberWord(quorum))} of ${numberWord(total)} Register seats sign each action.`
+          : 'The Desk holds no units between dealing days.'
+      const cta =
+        seat.keySet === 'register'
+          ? `<a class="btn btn-primary" href="${esc(withBase('/propose-mint'))}">Dealing day</a>`
+          : `<a class="btn btn-primary" href="${esc(withBase('/propose-disbursement'))}">Deliver units</a>`
+      accountBody.innerHTML = `
+        <p class="body-2">Connected as the <strong style="color:var(--role-${seat.keySet})">${esc(seat.name)}</strong> seat of the ${setName} key. ${esc(tail)}</p>
+        <div class="row-wrap">${cta}</div>`
+      return
+    }
+
+    const mptIssuanceId = requireMptIssuanceId(config)
+    accountBody.innerHTML = '<p class="meta">Reading your account…</p>'
     try {
-      const supplyRaw = await getOutstandingSupplyRaw(mptIssuanceId)
-      document.getElementById('stat-supply')!.textContent = `${toGton(supplyRaw)} Gton`
+      const drops = await getXrpBalanceDrops(address)
+      if (seq !== renderSeq) return
+      if (drops === undefined) {
+        accountBody.innerHTML = `
+          <p class="body-2">Your account isn't funded on the testnet yet. Open your GhostSig wallet, use its testnet faucet, then reload this page.</p>
+          <span class="address small-muted">${esc(address)}</span>`
+        return
+      }
+      const holding = await getMptHolding(address, mptIssuanceId)
+      const history = await deliveries
+      if (seq !== renderSeq) return
+      if (!holding.authorized) {
+        renderNotHolding(address, mptIssuanceId, ticker)
+        return
+      }
+      showRoleInHeader(holding.locked ? 'locked' : 'investor')
+      const last = history.find((payment) => payment.destination === address)
+      const ref = last ? orderRefOf(last.memos) : undefined
+      const lastLine = last ? lastDeliveryLine(ref, last.date) : 'No deliveries from the Dealing Desk yet.'
+      accountBody.innerHTML = `
+        <div class="stack-tight" style="gap:2px">
+          <span class="label">Your holding</span>
+          <span class="holding-value">${esc(formatUnits(holding.balanceRaw))} <small>${esc(ticker)}</small></span>
+        </div>
+        ${
+          holding.locked
+            ? `<div class="panel panel-alert"><span class="panel-label">Stop-transfer in place</span><span>Transfers paused on this holding while the register reviews it. Your units are safe.</span></div>`
+            : `<p class="body-2">${esc(lastLine)}</p>`
+        }`
+      if (!holding.locked) appendTransfer(address, mptIssuanceId, ticker)
     } catch {
-      document.getElementById('stat-supply')!.textContent = 'unavailable'
-    }
-    if (connectedAddress) {
-      const holding = await getMptHolding(connectedAddress, mptIssuanceId)
-      document.getElementById('stat-balance')!.textContent = holding.authorized ? `${toGton(holding.balanceRaw)} Gton` : 'not authorized'
-      const drops = await getXrpBalanceDrops(connectedAddress)
-      document.getElementById('stat-xrp')!.textContent = drops ? `${(Number(drops) / 1_000_000).toLocaleString()} XRP` : 'unfunded'
+      if (seq !== renderSeq) return
+      accountBody.innerHTML = statusHtml('error', 'Could not read your account from the testnet. Reconnect to try again.')
     }
   }
 
-  async function ensureAuthorized(mptIssuanceId: string) {
-    if (!connectedAddress) return
-    const funded = await isAccountFunded(connectedAddress)
-    if (!funded) {
-      authorizeArea.style.display = 'block'
-      statusMessage(
-        authorizeArea,
-        'info',
-        `Your address isn't funded on Testnet yet. Open GhostSig's wallet UI and use its built-in testnet faucet, then reload this page.`,
-      )
-      return
-    }
-    const holding = await getMptHolding(connectedAddress, mptIssuanceId)
-    if (holding.authorized) {
-      authorizeArea.style.display = 'none'
-      sendCard.style.display = 'block'
-      return
-    }
-    authorizeArea.style.display = 'block'
-    authorizeArea.innerHTML = ''
-    const button = document.createElement('button')
-    button.textContent = 'Self-authorize to hold CRBN'
+  function capitalise(text: string): string {
+    return text.charAt(0).toUpperCase() + text.slice(1)
+  }
+
+  function renderNotHolding(address: string, mptIssuanceId: string, ticker: string) {
+    accountBody.innerHTML = `
+      <p class="body-2">Your account doesn't hold ${esc(ticker)} yet.</p>
+      <span class="address small-muted">${esc(address)}</span>
+      <div><button type="button" class="btn btn-primary" id="authorize-button">Self-authorise to hold ${esc(ticker)}</button></div>
+      <p class="small-muted">Open to any wallet for this demo; a real share class admits investors (RequireAuth).</p>
+      <div id="authorize-result"></div>`
+    const button = document.getElementById('authorize-button') as HTMLButtonElement
+    const result = document.getElementById('authorize-result')!
     button.addEventListener('click', async () => {
       button.disabled = true
       try {
-        const tx = (await getClient()).forAccount(connectedAddress!).tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).toJSON()
-        const result = await ghostsigSign({ payload: { ...tx }, address: connectedAddress!, submit: true })
-        statusMessage(authorizeArea, 'success', `Authorized! (tx <a href="${TESTNET_EXPLORER_BASE}/transactions/${result.hash}" target="_blank" rel="noopener noreferrer">${result.hash}</a>)`)
-        sendCard.style.display = 'block'
-        await refreshStats(mptIssuanceId)
+        const tx = (await getClient()).forAccount(address).tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).toJSON()
+        const signed = await ghostsigSign({ payload: { ...tx }, address, submit: true })
+        result.innerHTML = `<div class="status success">Authorised. <a href="${esc(explorerTx(signed.hash))}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a></div>`
+        window.setTimeout(() => {
+          if (getStoredAddress() === address) void renderAccount(address)
+        }, 4000)
       } catch (err) {
-        const message = err instanceof GhostsigError ? err.message : err instanceof Error ? err.message : String(err)
-        statusMessage(authorizeArea, 'error', message)
+        result.innerHTML = statusHtml('error', errorText(err))
         button.disabled = false
       }
     })
-    authorizeArea.appendChild(button)
+  }
+
+  /** The existing holder-to-holder transfer, kept for the redemption leg (an investor returns units to the Desk). */
+  function appendTransfer(address: string, mptIssuanceId: string, ticker: string) {
+    const config = loadPublicConfig()
+    const details = document.createElement('details')
+    details.className = 'drawer'
+    details.innerHTML = `
+      <summary>Transfer units</summary>
+      <form class="drawer-body" id="send-form" novalidate>
+        <p>Redemptions go back through the Dealing Desk, on the terms on the <a href="${esc(withBase('/about'))}">About</a> page.</p>
+        <div class="field">
+          <label for="send-destination">Destination address</label>
+          <input class="input mono" id="send-destination" name="destination" placeholder="r…" autocomplete="off" spellcheck="false" required />
+          <button type="button" class="link-button" id="send-to-desk" style="align-self:flex-start">Use the Dealing Desk's address</button>
+        </div>
+        <div id="send-warning"></div>
+        <div class="field">
+          <label for="send-amount">Units</label>
+          <input class="input" id="send-amount" name="amount" inputmode="decimal" placeholder="0.000" autocomplete="off" required />
+        </div>
+        <div><button type="submit" class="btn btn-primary">Sign transfer with passkey</button></div>
+        <div id="send-result"></div>
+      </form>`
+    accountBody.appendChild(details)
+    const form = details.querySelector('form') as HTMLFormElement
+    const destination = form.querySelector('#send-destination') as HTMLInputElement
+    const warning = form.querySelector('#send-warning') as HTMLElement
+    const result = form.querySelector('#send-result') as HTMLElement
+    form.querySelector('#send-to-desk')!.addEventListener('click', async () => {
+      destination.value = requireGovernance(await config).address
+      void checkDestination()
+    })
+
+    async function checkDestination() {
+      const to = destination.value.trim()
+      warning.innerHTML = ''
+      if (!to) return
+      try {
+        const notice = await checkTransfer(address, to, mptIssuanceId, { source: 'Your account' })
+        if (notice) warning.innerHTML = readinessHtml(notice)
+      } catch {
+        warning.innerHTML = statusHtml('error', 'Could not check the destination. Try again before signing.')
+      }
+    }
+    destination.addEventListener('blur', () => void checkDestination())
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const submit = form.querySelector('button[type="submit"]') as HTMLButtonElement
+      result.innerHTML = ''
+      try {
+        const amountRaw = parseUnits((form.querySelector('#send-amount') as HTMLInputElement).value)
+        const to = destination.value.trim()
+        await checkDestination()
+        submit.disabled = true
+        const tx = (await getClient())
+          .forAccount(address)
+          .tx.payment({ Destination: to, Amount: { mpt_issuance_id: mptIssuanceId, value: amountRaw } })
+          .toJSON()
+        const signed = await ghostsigSign({ payload: { ...tx }, address, submit: true })
+        result.innerHTML = `<div class="status success">Sent ${esc(formatUnits(amountRaw))} ${esc(ticker)}. <a href="${esc(explorerTx(signed.hash))}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a></div>`
+      } catch (err) {
+        result.innerHTML = statusHtml('error', errorText(err))
+      } finally {
+        submit.disabled = false
+      }
+    })
   }
 
   async function main() {
     const config = await loadPublicConfig()
-    document.getElementById('issuer-address')!.textContent = config.issuer?.address ?? '(not deployed yet)'
-    document.getElementById('governance-address')!.textContent = config.governance?.address ?? '(not deployed yet)'
-    if (config.issuer) {
-      const el = document.getElementById('issuer-address')!
-      el.innerHTML = `<a href="${TESTNET_EXPLORER_BASE}/accounts/${config.issuer.address}" target="_blank" rel="noopener noreferrer">${config.issuer.address}</a>`
-    }
-    if (config.governance) {
-      const el = document.getElementById('governance-address')!
-      el.innerHTML = `<a href="${TESTNET_EXPLORER_BASE}/accounts/${config.governance.address}" target="_blank" rel="noopener noreferrer">${config.governance.address}</a>`
+    const issuer = requireIssuer(config)
+    const governance = requireGovernance(config)
+    const mptIssuanceId = requireMptIssuanceId(config)
+    const ticker = config.token.ticker
+
+    // Key sets: quorum and one chip per published signer, named by seat.
+    for (const keySet of ['register', 'desk'] as const) {
+      const account = keySet === 'register' ? issuer : governance
+      $(`${keySet}-quorum`).textContent = `${account.quorum} of ${account.signers.length}`
+      $(`${keySet}-chips`).innerHTML = seatsOf(config, keySet)
+        .map((seat) => `<span class="chip${keySet === 'desk' ? ' desk' : ''}">${esc(seat.name)}</span>`)
+        .join('')
     }
 
-    await refreshStats(config.mptIssuanceId)
+    $('tech-issuer').innerHTML = accountLink(issuer.address)
+    $('tech-desk').innerHTML = accountLink(governance.address)
+    $('tech-issuance').textContent = mptIssuanceId
+    $('tech-desk-label').textContent = `Dealing Desk account (${governance.quorum}-of-${governance.signers.length} signer list)`
 
-    onConnectionChange(async (address) => {
-      connectedAddress = address ?? undefined
-      if (!address) {
-        notConnectedHint.style.display = 'block'
-        roleCtas.style.display = 'none'
-        sendCard.style.display = 'none'
-        authorizeArea.style.display = 'none'
-        return
-      }
-      notConnectedHint.style.display = 'none'
-      roleCtas.style.display = 'block'
-      proposeMintCta.style.display = isIssuerSigner(config, address) ? 'inline-block' : 'none'
-      proposeDisbursementCta.style.display = isGovernanceSigner(config, address) ? 'inline-block' : 'none'
-      if (config.mptIssuanceId) {
-        try {
-          await ensureAuthorized(config.mptIssuanceId)
-          await refreshStats(config.mptIssuanceId)
-          pageError.textContent = ''
-        } catch {
-          // A failed read cannot tell us whether the account can send or authorize.
-          sendCard.style.display = 'none'
-          authorizeArea.style.display = 'none'
-          document.getElementById('stat-balance')!.textContent = 'unavailable'
-          document.getElementById('stat-xrp')!.textContent = 'unavailable'
-          pageError.textContent = 'Could not read your account from Testnet. Reconnect to try again.'
-        }
-      }
+    const deskPaymentsRead = getOutgoingMptPayments(governance.address, mptIssuanceId)
+    deliveries = deskPaymentsRead.then(
+      (payments) => [...payments].sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0)),
+      () => [],
+    )
+    onConnectionChange((address) => {
+      void renderAccount(address)
     })
 
-    async function checkSendDestination() {
-      const destination = sendDestinationInput.value.trim()
-      if (!destination || !config.mptIssuanceId) {
-        sendDestinationWarning.style.display = 'none'
-        return
-      }
-      try {
-        const warning = await destinationReadinessWarning(connectedAddress!, destination, config.mptIssuanceId)
-        if (warning) {
-          statusMessage(sendDestinationWarning, 'info', `\u26a0\ufe0f ${warning}`)
-          sendDestinationWarning.style.display = 'block'
-        } else {
-          sendDestinationWarning.style.display = 'none'
-        }
-      } catch {
-        sendDestinationWarning.textContent = 'Could not check token eligibility. Try again before signing.'
-        sendDestinationWarning.style.display = 'block'
-      }
-    }
-    sendDestinationInput.addEventListener('blur', checkSendDestination)
+    const [issuance, deskHolding, issuerPayments, deskPayments, issuerMaster, deskMaster] = await Promise.allSettled([
+      getIssuanceState(mptIssuanceId),
+      getMptHolding(governance.address, mptIssuanceId),
+      getOutgoingMptPayments(issuer.address, mptIssuanceId),
+      deskPaymentsRead,
+      isMasterKeyDisabled(issuer.address),
+      isMasterKeyDisabled(governance.address),
+    ])
 
-    sendForm.addEventListener('submit', async (event) => {
-      event.preventDefault()
-      if (!connectedAddress || !config.mptIssuanceId) return
-      const formData = new FormData(sendForm)
-      const destination = String(formData.get('destination') ?? '').trim()
-      const amountInput = String(formData.get('amount') ?? '').trim()
-      await checkSendDestination()
-      try {
-        const amountRaw = fromGton(amountInput)
-        const tx = (await getClient()).forAccount(connectedAddress).tx.payment({
-          Destination: destination, Amount: { mpt_issuance_id: config.mptIssuanceId, value: amountRaw },
-        }).toJSON()
-        const submitButton = sendForm.querySelector('button[type="submit"]') as HTMLButtonElement
-        submitButton.disabled = true
-        const result = await ghostsigSign({ payload: { ...tx }, address: connectedAddress, submit: true })
-        statusMessage(sendResult, 'success', `Sent! (tx <a href="${TESTNET_EXPLORER_BASE}/transactions/${result.hash}" target="_blank" rel="noopener noreferrer">${result.hash}</a>)`)
-        submitButton.disabled = false
-        await refreshStats(config.mptIssuanceId)
-      } catch (err) {
-        const message = err instanceof GhostsigError ? err.message : err instanceof Error ? err.message : String(err)
-        statusMessage(sendResult, 'error', message)
+    const periods = issuerPayments.status === 'fulfilled' ? issuerPayments.value.map((p) => mintPeriodOf(p.memos) ?? '') : []
+    const next = suggestNextDealingDay(periods)
+    const latestDay = periods
+      .map(parseDealingMonth)
+      .filter((m) => m !== undefined)
+      .map((m) => formatDealingDay(m!))
+      .sort()
+      .at(-1)
+    renderFacade(periods, next)
+
+    if (issuance.status === 'fulfilled') {
+      const outstanding = BigInt(issuance.value.outstandingRaw)
+      $('tile-issue').textContent = formatUnits(outstanding)
+      if (deskHolding.status === 'fulfilled') {
+        const desk = BigInt(deskHolding.value.balanceRaw)
+        $('tile-desk').textContent = formatUnits(desk)
+        $('tile-investors').textContent = formatUnits(outstanding - desk)
       }
-    })
+      const suspended = Boolean(issuance.value.flags.lsfMPTLocked)
+      const dealing = $('tile-dealing')
+      dealing.textContent = suspended ? 'SUSPENDED' : 'OPEN'
+      dealing.className = `tile-value ${suspended ? 'suspended' : 'open'}`
+      $('tile-dealing-sub').innerHTML = `Next dealing day <span class="nowrap">${esc(next)}</span>`
+      $('tech-flags').textContent = flagNames(issuance.value.flags).join(' · ') || 'none'
+      const masterDisabled = issuerMaster.status === 'fulfilled' && issuerMaster.value && deskMaster.status === 'fulfilled' && deskMaster.value
+      renderIssuersPanel(issuance.value.flags, masterDisabled)
+    } else {
+      for (const id of ['tile-issue', 'tile-desk', 'tile-investors', 'tile-dealing']) $(id).textContent = 'unavailable'
+      $('tech-flags').textContent = 'unavailable'
+    }
+    const navDay = latestDay ?? next ?? currentDealingDay()
+    $('tile-nav').textContent = formatEuro(illustrativeDealing(navDay).nav, 4)
+    $('tile-nav-sub').textContent = `Illustrative · ${navDay}`
+
+    if (issuerMaster.status === 'fulfilled' && issuerMaster.value) $('tech-issuer-label').textContent = 'MPT issuer (Register, master key disabled)'
+    if (deskMaster.status === 'fulfilled' && deskMaster.value) {
+      $('tech-desk-label').textContent = `Dealing Desk account (${governance.quorum}-of-${governance.signers.length} signer list, master key disabled)`
+    }
+
+    if (issuerPayments.status === 'fulfilled' && deskPayments.status === 'fulfilled') {
+      renderLedger(issuerPayments.value, deskPayments.value, issuer.address, governance.address, ticker)
+    } else {
+      $('ledger-rows').innerHTML = '<li class="ledger-empty">The ledger history is unavailable right now. The explorer link below has every entry.</li>'
+      ;($('ledger-more') as HTMLAnchorElement).href = explorerAccount(issuer.address)
+    }
+
+    if (issuance.status === 'rejected' && issuerPayments.status === 'rejected') {
+      pageError.textContent = 'Could not reach the XRPL testnet. Reload to try again.'
+    }
   }
 
   main().catch((err) => {
-    statusMessage(pageError, 'error', err instanceof Error ? err.message : String(err))
+    pageError.textContent = err instanceof Error ? err.message : String(err)
   })
 </script>

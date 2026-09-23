@@ -3,15 +3,24 @@
  * router), so a module-level variable holding the connected GhostSig
  * address resets on every navigation. This persists that (public,
  * non-secret) address across pages/reloads so visitors aren't forced back
- * through a fresh "Connect with GhostSig" popup just to be recognized
+ * through a fresh "Connect passkey" popup just to be recognized
  * again -- only actually *signing* a transaction ever needs a live GhostSig
  * ceremony, which this does not skip or cache.
  */
-const KEY = 'carbonCoin:ghostsigAddress'
+const KEY = 'mptDemo:ghostsigAddress'
+/** The key earlier versions of this site used. Read once and migrated, so returning visitors stay connected. */
+const LEGACY_KEY = 'carbonCoin:ghostsigAddress'
 
 export function getStoredAddress(): string | null {
   try {
-    return localStorage.getItem(KEY)
+    const current = localStorage.getItem(KEY)
+    if (current) return current
+    const legacy = localStorage.getItem(LEGACY_KEY)
+    if (legacy) {
+      localStorage.setItem(KEY, legacy)
+      localStorage.removeItem(LEGACY_KEY)
+    }
+    return legacy
   } catch {
     return null
   }
@@ -29,6 +38,7 @@ export function setStoredAddress(address: string): void {
 export function clearStoredAddress(): void {
   try {
     localStorage.removeItem(KEY)
+    localStorage.removeItem(LEGACY_KEY)
   } catch {
     // ignore
   }
