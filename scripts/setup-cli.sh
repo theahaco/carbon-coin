@@ -4,9 +4,11 @@ set -euo pipefail
 repository=$(jq -er .repository cli.json)
 revision=$(jq -er .commit cli.json)
 directory=.prototype/xrpl-rust
-mkdir -p .prototype
-if [[ ! -d "$directory" ]]; then
-  git clone --no-checkout --filter=blob:none "$repository" "$directory"
+mkdir -p "$directory"
+# CI may restore target/ without a source checkout. Keep those cached builds.
+if [[ ! -e "$directory/.git" ]]; then
+  git -C "$directory" init
+  git -C "$directory" remote add origin "$repository"
 elif [[ -n "$(git -C "$directory" status --porcelain)" ]]; then
   echo "Save the local changes in $directory before running setup." >&2
   exit 1
