@@ -14,33 +14,21 @@ export function cliEnvironment(extra: NodeJS.ProcessEnv = {}) {
     directory,
     env: {
       ...process.env,
-      XRPL_BIN: process.env.XRPL_BIN ?? path.join(root, '.prototype/xrpl-rust/target/release/xrpl'),
-      XRPL_NETWORK: 'local',
-      XRPL_DATA_DIR: path.join(directory, 'data'),
-      XRPL_CONFIG_DIR: path.join(directory, 'config'),
-      XRPL_PASSPHRASE: 'disposable-test-passphrase',
-      TOKEN_STATE_FILE: path.join(directory, 'deployment.json'),
-      TOKEN_PUBLIC_CONFIG: path.join(directory, 'public.json'),
-      TOKEN_TICKER: 'TEST',
-      TOKEN_NAME: 'Test Token',
-      TOKEN_DESCRIPTION: 'A test token',
-      TOKEN_ICON_URL: 'https://example.org/icon.png',
-      TOKEN_ASSET_CLASS: 'other',
-      TOKEN_ASSET_SUBCLASS: 'other',
-      TOKEN_ISSUER_NAME: 'Test Issuer',
-      ISSUER_SIGNER_ADDRESSES: '',
-      GOVERNANCE_SIGNER_ADDRESSES: '',
+      DEMO_DIR: directory,
       ...extra,
     } as NodeJS.ProcessEnv,
   }
 }
 
-export async function token(env: NodeJS.ProcessEnv, ...args: string[]) {
-  return exec(process.execPath, [path.join(root, 'scripts/run.mjs'), ...args], {
+export async function demo(env: NodeJS.ProcessEnv, script: string) {
+  return exec('bash', [path.join(root, 'scripts', script)], {
     cwd: root, env, timeout: 240_000, maxBuffer: 4 * 1024 * 1024,
   })
 }
 
-export function deployment(env: NodeJS.ProcessEnv) {
-  return JSON.parse(readFileSync(env.TOKEN_STATE_FILE!, 'utf8'))
+export function addresses(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    readFileSync(path.join(env.DEMO_DIR!, 'accounts.env'), 'utf8')
+      .trim().split('\n').map((line) => line.replace(/^export /, '').split('=')),
+  )
 }

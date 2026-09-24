@@ -1,4 +1,4 @@
-// Mirrors the (non-secret) shape written by `scripts/public-config.jq`.
+// Public browser deployment schema, independent of the local CLI walkthrough.
 
 import { withBase } from './paths'
 

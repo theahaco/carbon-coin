@@ -8,14 +8,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "devnet:up": "docker compose -p carbon-coin-devnet -f devnet/compose.yml up -d --wait",
-    "devnet:down": "docker compose -p carbon-coin-devnet -f devnet/compose.yml down",
-    "setup:issuer": "node scripts/run.mjs setup:issuer",
-    "setup:governance": "node scripts/run.mjs setup:governance",
-    "mint": "node scripts/run.mjs mint",
-    "redistribute": "node scripts/run.mjs redistribute",
-    "status": "node scripts/run.mjs status",
-    "web:sync-config": "node scripts/run.mjs web:sync-config",
+    "devnet:up": "bash scripts/start.sh",
+    "devnet:down": "bash scripts/stop.sh",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:typecheck": "npm --prefix web run typecheck",
@@ -23,9 +17,8 @@
     "test:integration": "vitest run",
     "typecheck": "tsc --noEmit && npm run web:typecheck",
     "prototype:setup": "node scripts/setup-prototype.mjs",
-    "deployment:import": "node scripts/run.mjs deployment:import",
-    "cli:setup": "node scripts/setup-cli.mjs",
-    "cli:lint": "shellcheck scripts/token.sh scripts/token-common.sh && bash -n scripts/token.sh scripts/token-common.sh"
+    "cli:setup": "bash scripts/setup-cli.sh",
+    "cli:lint": "shellcheck -x scripts/*.sh scripts/lib/*.sh"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
