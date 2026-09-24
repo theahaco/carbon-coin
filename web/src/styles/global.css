@@ -17,6 +17,7 @@
   --brand-accent-tint: #e4efeb;
   --brand-accent-rule: #b9d3ca;
   --brand-alert: #a5402d;
+  --brand-alert-hover: #8e3626;
   --brand-alert-tint: #f5e6e1;
   --brand-disabled: #c9c2b5;
   --role-register: #2f7d6d;
@@ -377,7 +378,8 @@ main {
 }
 
 /* Placeholders a script fills later (a note, a warning) take no gap while empty. */
-.stack > div:empty {
+.stack > div:empty,
+.card > div:empty {
   display: none;
 }
 
@@ -566,6 +568,17 @@ main {
 .btn-secondary:hover {
   background: var(--brand-surface);
   color: var(--brand-ink);
+}
+
+/* Stop-transfer only. */
+.btn-destructive {
+  background: var(--brand-alert);
+  color: var(--brand-surface);
+}
+
+.btn-destructive:hover {
+  background: var(--brand-alert-hover);
+  color: var(--brand-surface);
 }
 
 .btn-ink {
@@ -762,7 +775,8 @@ textarea.input {
 
 .pick .pick-addr {
   font: 14px var(--font-mono);
-  overflow-wrap: anywhere;
+  /* Picks show short addresses (rAb7Tq…Q7Kx): keep one on a line and let the status wrap instead. */
+  white-space: nowrap;
 }
 
 .pick .pick-status {
@@ -1297,6 +1311,10 @@ a.ledger-row:hover {
   --stamp: var(--role-desk);
 }
 
+.stamp.stop {
+  --stamp: var(--brand-alert);
+}
+
 .ledger-main {
   display: flex;
   flex-direction: column;
@@ -1324,6 +1342,31 @@ a.ledger-row:hover {
   font: 600 10.5px/1.2 var(--font-sans);
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+/* A lost-key replacement: its stop, clawback and re-issue in one dashed box. */
+.ledger-group-item {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--brand-rule-2);
+}
+
+.ledger-group {
+  border: 1px dashed var(--brand-dashed);
+  background: var(--brand-surface);
+}
+
+.ledger-group-head {
+  padding: 8px 12px;
+  font: 500 12px var(--font-sans);
+  letter-spacing: 0.06em;
+  color: var(--brand-muted);
+  border-bottom: 1px dashed var(--brand-dashed);
+}
+
+.ledger-row.in-group {
+  padding: 10px 12px;
+  gap: 10px;
+  border-bottom: none;
 }
 
 .ledger-date {
@@ -1468,4 +1511,75 @@ a.ledger-row:hover {
   color: var(--brand-alert);
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+/* ---------- Register controls ---------- */
+
+.stepper {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--brand-rule);
+  border: 1px solid var(--brand-rule);
+}
+
+.step {
+  background: var(--brand-surface);
+  color: var(--brand-muted);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.step-label {
+  font: 500 11px var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.step-title {
+  font-weight: 500;
+}
+
+.step.current {
+  background: var(--brand-ink);
+  color: var(--brand-ground);
+}
+
+.step.current .step-label {
+  opacity: 0.8;
+}
+
+.step.done {
+  background: var(--brand-accent-tint);
+  color: var(--brand-accent);
+}
+
+.units-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-top: 1px dotted var(--brand-dotted);
+  border-bottom: 1px dotted var(--brand-dotted);
+}
+
+.units-row .units-key {
+  color: var(--brand-ink-2);
+}
+
+.units-row .units-value {
+  font-weight: 500;
+}
+
+.memo-value {
+  font: 14px var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.wallet-value {
+  font: 15px var(--font-mono);
+  word-break: break-all;
 }

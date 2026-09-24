@@ -1,5 +1,6 @@
 import type { TextMemo } from 'xrpl'
 import { KYC_RELIANCE, kycReferenceOf, type Admission } from './admission'
+import { pairReplacements, reasonWithoutRef, reissuesOf, replacementRefOf, type ControlAction, type ReplacementPair } from './controls'
 import { contractNote, currentDealingDay, formatEuro, isDealingDay } from './dealing'
 import { shortAddress } from './format'
 import { isFinerThanUnits, issueDeviation, type IssueDeviation } from './procedure'
@@ -7,12 +8,14 @@ import { formatAmountExact } from './units'
 import type { MptPayment } from './xrplClient'
 
 /**
- * The public register ledger, read-only: every issue and admission by the
- * Register (the issuer account) and every delivery by the Dealing Desk (the
- * governance account), newest first. Nothing here is enforced by the
- * ledger; it's the public trail that makes a skipped step visible.
+ * The public register ledger, read-only: every issue, admission,
+ * stop-transfer, release and clawback by the Register (the issuer account)
+ * and every delivery by the Dealing Desk (the governance account), newest
+ * first. A lost-key replacement (the stop, the clawback and the re-issue
+ * sharing one `REPL-…` reference) is grouped. Nothing here is enforced by
+ * the ledger; it's the public trail that makes a skipped step visible.
  */
-export type LedgerStamp = 'ISSUE' | 'ADMIT' | 'DELIVER' | 'REDEEM'
+export type LedgerStamp = 'ISSUE' | 'ADMIT' | 'DELIVER' | 'REDEEM' | 'STOP' | 'RELEASE' | 'REPLACE' | 'CLAWBACK'
 
 export interface LedgerRow {
   stamp: LedgerStamp
@@ -23,6 +26,10 @@ export interface LedgerRow {
   date?: Date
   /** Set when the entry is valid but doesn't follow the procedure. */
   offProcedure?: string
+  /** The lost-key replacement this row belongs to, which groups it. */
+  replRef?: string
+  /** Which step of that replacement the row is. */
+  leg?: 'stop' | 'clawback' | 'reissue'
 }
 
 export interface LedgerInput {
@@ -30,6 +37,8 @@ export interface LedgerInput {
   deskPayments: MptPayment[]
   /** The Register's admissions (RequireAuth issuances only; absent or empty otherwise). */
   admissions?: Admission[]
+  /** The Register's stop-transfers, releases and clawbacks (absent when they couldn't be read). */
+  controls?: ControlAction[]
   issuer: string
   desk: string
   ticker: string
@@ -75,8 +84,9 @@ function issueRow(payment: MptPayment, input: LedgerInput): LedgerRow {
   const units = `${formatAmountExact(payment.amountRaw)} ${input.ticker}`
   const day = mintPeriod(payment.memos)
   const toDesk = payment.destination === input.desk
+  const replRef = toDesk ? undefined : replacementRefOf(payment.memos)
   // `DD 2026-09` tags a dealing day; the € figures only when the units are the note's. Other labels show as written.
-  let memo = day ?? '(no dealing-day memo)'
+  let memo = day ?? replRef ?? '(no dealing-day memo)'
   if (day && isDealingDay(day)) {
     memo = `DD ${day}`
     if (matchesContractNote(day, payment.amountRaw)) {
@@ -92,7 +102,8 @@ function issueRow(payment: MptPayment, input: LedgerInput): LedgerRow {
     hash: payment.hash,
     ledgerIndex: payment.ledgerIndex,
     date: payment.date,
-    offProcedure: deviation && LEDGER_REASON[deviation.kind],
+    // Named as a replacement, but no clawback of the same units carries the reference (when the controls could be read).
+    offProcedure: replRef && input.controls ? 'No matching claw-back' : deviation && LEDGER_REASON[deviation.kind],
   }
 }
 
@@ -138,11 +149,113 @@ function admitRow(admission: Admission, input: LedgerInput): LedgerRow {
   }
 }
 
+function controlRow(action: ControlAction, input: LedgerInput, pairedStops: Map<ControlAction, string>): LedgerRow {
+  const base = { hash: action.hash, ledgerIndex: action.ledgerIndex, date: action.date }
+  const who = shortAddress(action.holder)
+  switch (action.kind) {
+    case 'stop':
+      return {
+        ...base,
+        stamp: 'STOP',
+        title: `Stop-transfer on ${who}`,
+        memo: action.reason ? `reason: ${action.reason}` : '(no reason memo)',
+        offProcedure: action.reason ? undefined : 'No reason memo',
+        ...(pairedStops.has(action) ? { replRef: pairedStops.get(action), leg: 'stop' as const } : {}),
+      }
+    case 'release':
+      return { ...base, stamp: 'RELEASE', title: `Released the stop-transfer on ${who}`, memo: action.reason ? `reason: ${action.reason}` : '(no memo)' }
+    case 'clawback': {
+      const units = formatAmountExact(action.amountRaw ?? '0')
+      if (action.replRef) {
+        return { ...base, stamp: 'REPLACE', title: `Clawed back ${units} from ${who}`, memo: action.replRef, replRef: action.replRef, leg: 'clawback' }
+      }
+      return {
+        ...base,
+        stamp: 'CLAWBACK',
+        title: `Clawed back ${units} ${input.ticker} from ${who}`,
+        memo: action.reason ? `reason: ${reasonWithoutRef(action.reason) ?? action.reason}` : '(no reason memo)',
+        offProcedure: action.reason ? 'No replacement reference' : 'No reason memo',
+      }
+    }
+  }
+}
+
+function reissueRow(payment: MptPayment, pair: ReplacementPair): LedgerRow {
+  return {
+    stamp: 'REPLACE',
+    title: `Re-issued ${formatAmountExact(payment.amountRaw)} to ${shortAddress(payment.destination)}`,
+    memo: pair.ref,
+    hash: payment.hash,
+    ledgerIndex: payment.ledgerIndex,
+    date: payment.date,
+    replRef: pair.ref,
+    leg: 'reissue',
+  }
+}
+
+/** Every row, newest first. `buildRegisterLedgerEntries` groups a replacement's rows. */
 export function buildRegisterLedger(input: LedgerInput): LedgerRow[] {
+  const controls = input.controls ?? []
+  // A Register payment to a wallet other than the Desk is a re-issue only when a clawback of the same units carries its reference.
+  const { pairs } = pairReplacements(controls, reissuesOf(input.issuerPayments, input.desk))
+  const reissueOf = new Map<string | number, ReplacementPair>()
+  const pairedStops = new Map<ControlAction, string>()
+  for (const pair of pairs) {
+    if (pair.reissue) reissueOf.set(pair.reissue.hash ?? pair.reissue.ledgerIndex ?? -1, pair)
+    if (pair.stop && !pairedStops.has(pair.stop)) pairedStops.set(pair.stop, pair.ref)
+  }
   const rows = [
-    ...input.issuerPayments.map((p) => issueRow(p, input)),
+    ...input.issuerPayments.map((p) => {
+      const pair = reissueOf.get(p.hash ?? p.ledgerIndex ?? -1)
+      return pair ? reissueRow(p, pair) : issueRow(p, input)
+    }),
     ...(input.admissions ?? []).map((a) => admitRow(a, input)),
+    ...controls.map((c) => controlRow(c, input, pairedStops)),
     ...input.deskPayments.map((p) => deskRow(p, input)),
   ]
   return rows.sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0))
+}
+
+/** One line of the register ledger: a row, or a lost-key replacement's rows in a dashed box. */
+export type LedgerEntry =
+  | { kind: 'row'; row: LedgerRow }
+  | {
+      kind: 'group'
+      ref: string
+      /** `Lost-key replacement · REPL-2026-003`, noting a re-issue that isn't on the ledger yet. */
+      label: string
+      /** Oldest first: the stop, the clawback, the re-issue. */
+      rows: LedgerRow[]
+    }
+
+/**
+ * The register ledger as the overview shows it: newest first, with each
+ * replacement's rows (its stop, clawback and re-issue) grouped under their
+ * reference, placed where its newest row falls.
+ */
+export function groupRegisterLedger(rows: LedgerRow[]): LedgerEntry[] {
+  const groups = new Map<string, LedgerRow[]>()
+  for (const row of rows) {
+    if (!row.replRef) continue
+    groups.set(row.replRef, [...(groups.get(row.replRef) ?? []), row])
+  }
+  const entries: LedgerEntry[] = []
+  const placed = new Set<string>()
+  for (const row of rows) {
+    const ref = row.replRef
+    if (!ref) {
+      entries.push({ kind: 'row', row })
+      continue
+    }
+    if (placed.has(ref)) continue
+    placed.add(ref)
+    const members = [...groups.get(ref)!].reverse()
+    const reissued = members.some((member) => member.leg === 'reissue')
+    entries.push({ kind: 'group', ref, label: `Lost-key replacement · ${ref}${reissued ? '' : ' · re-issue pending'}`, rows: members })
+  }
+  return entries
+}
+
+export function buildRegisterLedgerEntries(input: LedgerInput): LedgerEntry[] {
+  return groupRegisterLedger(buildRegisterLedger(input))
 }

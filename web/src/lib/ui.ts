@@ -5,7 +5,8 @@
 import QRCode from 'qrcode'
 import { brand, type KeySet } from '../brand'
 import { formatEuro, type ContractNote } from './dealing'
-import { esc } from './format'
+import { esc, formatShortDate } from './format'
+import type { LedgerEntry, LedgerRow, LedgerStamp } from './ledger'
 import { problemCopy, type ProblemOptions, type ProblemStatus } from './outcome'
 import type { ReadinessNotice } from './readiness'
 import { ROLE_WITH_ARTICLE, waitingFor, type RoleKind, type Seat } from './role'
@@ -83,6 +84,10 @@ const NON_SIGNER_BODY: Record<KeySet, string> = {
 /** The non-signer body for the Admit investor page. */
 export const NON_SIGNER_ADMIT =
   'Admission is done by Register keyholders. They put an account on the register, relying on the KYC the Dealing Desk has already completed off-ledger.'
+
+/** The non-signer body for the Register controls page. */
+export const NON_SIGNER_CONTROLS =
+  'Stop-transfer and lost-key replacement are Register controls. Two of the three Register seats sign each one, with a reason memo.'
 
 /**
  * The card shown when a page needs a key the viewer doesn't hold: explains
@@ -182,4 +187,43 @@ export function readinessHtml(notice: ReadinessNotice, extraHtml = ''): string {
     ${notice.lines.map((line) => `<span>${sentenceHtml(line)}</span>`).join('')}
     ${extraHtml}
   </div>`
+}
+
+/** Stamp colours: ISSUE accent, DELIVER desk, STOP alert; the rest ink. */
+const STAMP_CLASS: Partial<Record<LedgerStamp, string>> = { ISSUE: 'issue', DELIVER: 'deliver', STOP: 'stop' }
+
+function ledgerRowInner(row: LedgerRow): string {
+  return `
+    <span class="stamp ${STAMP_CLASS[row.stamp] ?? ''}">${esc(row.stamp)}</span>
+    <span class="ledger-main">
+      <span class="ledger-title">${esc(row.title)}</span>
+      <span class="ledger-memo">${esc(row.memo)}</span>
+      ${row.offProcedure ? `<span class="ledger-flag">Off-procedure · ${esc(row.offProcedure)}</span>` : ''}
+    </span>
+    <span class="ledger-date">${row.date ? esc(formatShortDate(row.date)) : ''}${row.hash ? ' ↗' : ''}</span>`
+}
+
+/** One ledger row; with a hash it opens the transaction on the testnet explorer. */
+function ledgerRowHtml(row: LedgerRow, extraClass = ''): string {
+  const classes = ['ledger-row', extraClass].filter(Boolean).join(' ')
+  return row.hash
+    ? `<a class="${classes}" href="${esc(`${TESTNET_EXPLORER_BASE}/transactions/${row.hash}`)}" target="_blank" rel="noopener noreferrer">${ledgerRowInner(row)}</a>`
+    : `<div class="${classes}">${ledgerRowInner(row)}</div>`
+}
+
+/** A lost-key replacement's rows in the dashed box, headed by its reference. */
+export function ledgerGroupHtml(group: Extract<LedgerEntry, { kind: 'group' }>): string {
+  return `<div class="ledger-group">
+    <div class="ledger-group-head">${esc(group.label)}</div>
+    ${group.rows.map((row) => ledgerRowHtml(row, 'in-group')).join('')}
+  </div>`
+}
+
+/** The register ledger's entries as `<li>` items, newest first. */
+export function ledgerEntriesHtml(entries: LedgerEntry[]): string {
+  return entries
+    .map((entry) =>
+      entry.kind === 'group' ? `<li class="ledger-group-item">${ledgerGroupHtml(entry)}</li>` : `<li>${ledgerRowHtml(entry.row)}</li>`,
+    )
+    .join('')
 }

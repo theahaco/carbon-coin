@@ -58,6 +58,7 @@ import Layout from '../layouts/Layout.astro'
       </div>
       <div id="note"></div>
       <div id="history-check"></div>
+      <div id="replacement-check"></div>
       <div id="destination-warning"></div>
     </div>
 
@@ -92,10 +93,19 @@ import Layout from '../layouts/Layout.astro'
   import { configRequiresAuth, loadPublicConfig, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
   import { signCeremonyPayload } from '../lib/ceremony'
-  import { describeProposal, type ProposalPreview } from '../lib/preview'
-  import { checkTransfer, getMintHistory, getMptHolding, getRequireAuth, watchProposal, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
+  import { describeProposal, type ProposalContext, type ProposalPreview } from '../lib/preview'
+  import {
+    checkTransfer,
+    getIssuanceTransactions,
+    getMintHistory,
+    getMptHolding,
+    getRequireAuth,
+    watchProposal,
+    TESTNET_EXPLORER_BASE,
+  } from '../lib/xrplClient'
   import { admissionNotice, admissionState, KYC_RELIANCE } from '../lib/admission'
-  import { ADMISSION_RESULT_MEANING, type ProblemOptions } from '../lib/outcome'
+  import { controlActionsOf, controlNotice, reissuesOf } from '../lib/controls'
+  import { problemOptionsFor } from '../lib/outcome'
   import { alreadyIssued } from '../lib/procedure'
   import { formatUnits } from '../lib/units'
   import { urlParamToBlob } from '../lib/blob'
@@ -134,6 +144,8 @@ import Layout from '../layouts/Layout.astro'
   let connectedAddress: string | null = null
   let settled = false
   let stopWatching: (() => void) | undefined
+  /** Set while the register ledger is read to match a payment naming a replacement; nothing shows meanwhile. */
+  let loading = false
   /** Set when this issue's dealing day already has an issue on the ledger: a second, OFF-PROCEDURE reason. */
   let duplicateReason: string | undefined
   let historySeq = 0
@@ -143,7 +155,7 @@ import Layout from '../layouts/Layout.astro'
     const mptIssuanceId = requireMptIssuanceId(config)
     /** Whether the issuance requires admission: the ledger's flags, else the published ones. */
     const requireAuthRead = getRequireAuth(mptIssuanceId, configRequiresAuth(config))
-    const ctx = {
+    const ctx: ProposalContext = {
       ticker: config.token.ticker,
       mptIssuanceId,
       issuer: config.issuer?.address,
@@ -200,6 +212,17 @@ import Layout from '../layouts/Layout.astro'
         $('destination-line').innerHTML = `Account <span class="address">${esc(preview.holder)}</span>${esc(holderName)}${
           preview.kycRef ? `<br>Memo <span class="mono">${esc(`${preview.kycRef} · ${KYC_RELIANCE}`)}</span>` : ''
         }`
+      } else if ((preview.kind === 'stop' || preview.kind === 'release' || preview.kind === 'clawback') && preview.holder) {
+        // The full address of the holding, and the reason memo as written.
+        const holderName = preview.holder === ctx.desk ? ' (the Dealing Desk)' : ''
+        $('destination-line').innerHTML = `Holding <span class="address">${esc(preview.holder)}</span>${esc(holderName)}${
+          preview.reason ? `<br>Memo <span class="mono">${esc(preview.reason)}</span>` : ''
+        }`
+      } else if (preview.kind === 'reissue' && preview.pairedClawback) {
+        const clawback = preview.pairedClawback
+        $('destination-line').innerHTML = `To <span class="address">${esc(destination)}</span><br>Replaces the units clawed back from <span class="address">${esc(
+          clawback.holder,
+        )}</span>${clawback.date ? ` on ${esc(formatDate(clawback.date))}` : ''}`
       } else {
         $('destination-line').innerHTML = destination ? `To <span class="address">${esc(destination)}</span>${esc(destinationName)}` : ''
       }
@@ -214,6 +237,10 @@ import Layout from '../layouts/Layout.astro'
 
     function render() {
       if (settled) return
+      if (loading) {
+        show()
+        return
+      }
       if (!tx || !preview) {
         show('open-card')
         return
@@ -252,11 +279,30 @@ import Layout from '../layouts/Layout.astro'
         })
     }
 
+    /** The co-signer's check on a stop-transfer, release or clawback against the holding as it stands. Advisory. */
+    function checkControl(proposal: ProposalPreview, kind: 'stop' | 'release' | 'clawback') {
+      const warning = $('destination-warning')
+      const holder = proposal.holder
+      if (!holder) return
+      getMptHolding(holder, mptIssuanceId)
+        .then((holding) => {
+          const notice = controlNotice(kind, holding, holder, ctx.ticker, proposal.amountRaw)
+          if (notice) warning.innerHTML = readinessHtml(notice)
+        })
+        .catch(() => {
+          warning.innerHTML = '<div class="status">Could not check the holding. Try again before signing.</div>'
+        })
+    }
+
     function checkDestination(proposal: ProposalPreview) {
       const warning = $('destination-warning')
       warning.innerHTML = ''
       if (proposal.kind === 'admit') {
         checkAdmission(proposal)
+        return
+      }
+      if (proposal.kind === 'stop' || proposal.kind === 'release' || proposal.kind === 'clawback') {
+        checkControl(proposal, proposal.kind)
         return
       }
       // Units returned to the Register are cancelled; the issuer never holds an MPToken, so skip the check.
@@ -300,10 +346,38 @@ import Layout from '../layouts/Layout.astro'
         })
     }
 
-    function load(decoded: Record<string, unknown>) {
+    /** The Register's controls and candidate re-issues, which a payment naming a replacement is matched against. */
+    async function readReplacements(): Promise<NonNullable<ProposalContext['replacements']>> {
+      const issuer = ctx.issuer ?? ''
+      const transactions = await getIssuanceTransactions(issuer, mptIssuanceId)
+      const payments = transactions.filter((entry) => entry.type === 'Payment' && entry.account === issuer)
+      return { actions: controlActionsOf(transactions, issuer), reissues: reissuesOf(payments, ctx.desk ?? '') }
+    }
+
+    let loadSeq = 0
+
+    async function load(decoded: Record<string, unknown>) {
+      const seq = ++loadSeq
+      loading = false
       tx = decoded
       preview = describeProposal(decoded, ctx)
       pageError.textContent = ''
+      const replacementNote = $('replacement-check')
+      replacementNote.innerHTML = ''
+      // A Register payment naming a replacement is a re-issue only if the register ledger pairs it with a claw-back: read that first.
+      if (preview.kind === 'issue' && preview.replRef && ctx.issuer) {
+        const ref = preview.replRef
+        loading = true
+        render()
+        try {
+          ctx.replacements = await readReplacements()
+        } catch {
+          replacementNote.innerHTML = `<div class="status">Couldn't read the register ledger to match this payment to the claw-back of ${esc(ref)}. Check the register ledger before you sign.</div>`
+        }
+        if (seq !== loadSeq) return
+        loading = false
+        preview = describeProposal(decoded, ctx)
+      }
       checkDestination(preview)
       checkDuplicateDay(preview, decoded.Sequence)
       render()
@@ -330,13 +404,11 @@ import Layout from '../layouts/Layout.astro'
     /** Failed on the ledger, superseded or unreadable: an alert panel, never the success panel or the past-tense line. */
     function showNotCompleted(proposal: ProposalPreview, status: ProblemStatus) {
       settled = true
-      const opts: ProblemOptions =
-        proposal.kind === 'admit' ? { effect: 'Nothing changed on the register.', meanings: ADMISSION_RESULT_MEANING } : {}
       $('not-completed').innerHTML = problemPanelHtml(
         status,
         proposal.sentence,
         `<a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>`,
-        opts,
+        problemOptionsFor(proposal.kind),
       )
       show('not-completed')
     }
@@ -401,7 +473,7 @@ import Layout from '../layouts/Layout.astro'
 
     $('manual-load').addEventListener('click', () => {
       try {
-        load(parseInput(manualInput.value))
+        void load(parseInput(manualInput.value))
       } catch (err) {
         pageError.textContent = `Couldn't read that transaction: ${err instanceof Error ? err.message : String(err)}`
       }
@@ -410,7 +482,7 @@ import Layout from '../layouts/Layout.astro'
     const blobParam = new URLSearchParams(window.location.search).get('b')
     if (blobParam) {
       try {
-        load(parseInput(urlParamToBlob(blobParam)))
+        void load(parseInput(urlParamToBlob(blobParam)))
       } catch (err) {
         pageError.textContent = `Couldn't decode the transaction in this link: ${err instanceof Error ? err.message : String(err)}`
       }

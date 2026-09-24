@@ -3,7 +3,7 @@ import '../styles/global.css'
 import { withBase } from '../lib/paths'
 import { brand } from '../brand'
 
-export type NavId = 'overview' | 'dealing' | 'admit' | 'deliver' | 'sign' | 'about'
+export type NavId = 'overview' | 'dealing' | 'admit' | 'deliver' | 'sign' | 'controls' | 'about'
 
 interface Props {
   title: string
@@ -17,14 +17,14 @@ const { title, active, wide = false } = Astro.props
 // Crawlers need an absolute URL. The image carries the band, as the handoff asks.
 const ogImage = Astro.site ? new URL(withBase('/og.png'), Astro.site).href : withBase('/og.png')
 
-// Only routes backed by live ceremonies. Register controls (lock and
-// clawback) arrive with their own ceremonies.
+// Only routes backed by live ceremonies.
 const nav: Array<{ id: NavId; label: string; href: string }> = [
   { id: 'overview', label: 'Overview', href: '/' },
   { id: 'dealing', label: 'Dealing day', href: '/propose-mint' },
   { id: 'admit', label: 'Admit investor', href: '/admit' },
   { id: 'deliver', label: 'Deliver units', href: '/propose-disbursement' },
   { id: 'sign', label: 'Co-sign', href: '/sign' },
+  { id: 'controls', label: 'Controls', href: '/controls' },
   { id: 'about', label: 'About', href: '/about' },
 ]
 ---

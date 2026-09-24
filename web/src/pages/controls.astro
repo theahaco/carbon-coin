@@ -1,0 +1,870 @@
+---
+import Layout from '../layouts/Layout.astro'
+---
+
+<Layout title="Register controls" active="controls">
+  <div class="page-head">
+    <span class="eyebrow register">Register keys</span>
+    <h1 class="h1-inner">Register controls</h1>
+    <p class="body-2">Pause transfers on a holding, and replace units when a holder loses their key.</p>
+  </div>
+
+  <div id="page-error" class="status error" role="alert"></div>
+
+  <section id="non-signer" class="card" hidden></section>
+
+  <div id="controls" class="stack" hidden>
+    <div id="unfinished" class="stack" hidden></div>
+
+    <form id="stop-form" class="card" style="gap:14px" novalidate>
+      <span class="card-subtitle">Stop-transfer</span>
+      <div id="no-lock" class="panel panel-alert" hidden>
+        <span class="panel-label">No stop-transfer on this issuance</span>
+        <span>This issuance doesn't set CanLock, so the ledger would reject a stop-transfer.</span>
+      </div>
+      <fieldset class="field" style="border:0;margin:0;padding:0">
+        <legend class="field-label" style="padding:0;margin-bottom:6px">Holding</legend>
+        <div class="picks" id="picks"></div>
+        <label for="holder-input" class="small-muted sr-only" id="holder-label" style="margin-top:4px">Holding address</label>
+        <input id="holder-input" class="input mono" name="holder" placeholder="r…" autocomplete="off" spellcheck="false" />
+        <span class="small-muted" id="picks-note">Reading holdings from the ledger…</span>
+      </fieldset>
+      <div id="holder-warning"></div>
+      <div class="field">
+        <label for="reason-input">Reason (memo)</label>
+        <input id="reason-input" class="input mono" name="reason" value="lost key" maxlength="64" autocomplete="off" spellcheck="false" />
+      </div>
+      <div><button id="stop-button" type="submit" class="btn btn-destructive btn-lg" disabled>Sign stop-transfer</button></div>
+      <span class="small-muted" id="stop-note"></span>
+    </form>
+
+    <section id="stopped" class="panel panel-alert" style="padding:20px;gap:10px" hidden></section>
+
+    <form id="release-form" class="card" style="gap:14px" novalidate hidden>
+      <span class="card-subtitle">Release stop-transfer</span>
+      <p class="body-2" id="release-text"></p>
+      <div class="field">
+        <label for="release-reason">Reason (memo)</label>
+        <input id="release-reason" class="input mono" name="release-reason" value="key found" maxlength="64" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="row-wrap" style="gap:10px">
+        <button id="release-button" type="submit" class="btn btn-primary btn-lg">Sign release</button>
+        <button id="release-cancel" type="button" class="btn btn-secondary btn-lg">Cancel</button>
+      </div>
+    </form>
+
+    <section id="replace" class="stack" style="gap:0" hidden>
+      <div class="stepper" id="stepper"></div>
+      <form id="replace-form" class="card" style="gap:14px;border-top:0" novalidate></form>
+    </section>
+  </div>
+
+  <section id="handoff" hidden></section>
+
+  <section id="done" class="panel panel-success" hidden></section>
+
+  <section id="paired" class="stack" hidden></section>
+
+  <section id="not-completed" class="panel panel-alert" hidden></section>
+</Layout>
+
+<script>
+  import { isValidClassicAddress } from 'xrpl'
+  import { configRequiresAuth, loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
+  import { onConnectionChange } from '../lib/connect'
+  import { buildClawbackTx, buildProposalPaymentTx, buildStopTx } from '../lib/tx'
+  import { signCeremonyPayload } from '../lib/ceremony'
+  import { describeProposal, type ProposalContext, type ProposalPreview } from '../lib/preview'
+  import {
+    checkTransfer,
+    getIssuanceState,
+    getIssuanceTransactions,
+    getMptHolding,
+    getOutgoingMptPayments,
+    watchProposal,
+    TESTNET_EXPLORER_BASE,
+    type IssuanceTransaction,
+    type MptHolding,
+    type MptPayment,
+  } from '../lib/xrplClient'
+  import { admissionsOf, type Admission } from '../lib/admission'
+  import {
+    controlActionsOf,
+    currentStop,
+    pairReplacements,
+    reasonMemo,
+    reissuesOf,
+    replacementMemo,
+    replacementOfClawback,
+    suggestReplacementRef,
+    unfinishedReplacements,
+    LOST_KEY,
+    type ControlAction,
+    type ReplacementPair,
+  } from '../lib/controls'
+  import { buildRegisterLedgerEntries } from '../lib/ledger'
+  import { esc, formatShortDate, shortAddress } from '../lib/format'
+  import { numberWord, seatOn, seatsOf, signerRole } from '../lib/role'
+  import { formatUnits } from '../lib/units'
+  import { NON_SIGNER_CONTROLS, ledgerGroupHtml, nonSignerHtml, problemPanelHtml, readinessHtml, renderHandoff, sentenceHtml } from '../lib/ui'
+  import { problemOptionsFor, type ProblemStatus } from '../lib/outcome'
+  import { withBase } from '../lib/paths'
+
+  /** How many recent holders to read for the pick lists. */
+  const MAX_HOLDINGS = 12
+  const MAX_PICKS = 6
+
+  const $ = (id: string) => document.getElementById(id)!
+  const pageError = $('page-error')
+  const controls = $('controls')
+  const stopForm = $('stop-form') as HTMLFormElement
+  const holderInput = $('holder-input') as HTMLInputElement
+  const reasonInput = $('reason-input') as HTMLInputElement
+  const stopButton = $('stop-button') as HTMLButtonElement
+  const holderWarning = $('holder-warning')
+  const releaseForm = $('release-form') as HTMLFormElement
+  const releaseButton = $('release-button') as HTMLButtonElement
+  const releaseReason = $('release-reason') as HTMLInputElement
+  const replaceForm = $('replace-form') as HTMLFormElement
+
+  /** The panels inside the controls block; one shows at a time, besides the unfinished-replacement notices. */
+  const VIEWS = ['stop-form', 'stopped', 'release-form', 'replace'] as const
+  type ViewId = (typeof VIEWS)[number]
+  /** Result sections outside the controls block. */
+  const RESULTS = ['handoff', 'done', 'paired', 'not-completed'] as const
+  type ResultId = (typeof RESULTS)[number]
+
+  let connectedAddress: string | undefined
+  let stopWatching: (() => void) | undefined
+  /** A ceremony or its result is on screen: connection changes don't bring the controls back. */
+  let inFlight = false
+  let checkSeq = 0
+
+  interface Holding extends MptHolding {
+    address: string
+  }
+
+  interface RegisterHistory {
+    transactions: IssuanceTransaction[]
+    actions: ControlAction[]
+    admissions: Admission[]
+    /** The Register's own payments of the issuance. */
+    payments: MptPayment[]
+    pairs: ReplacementPair[]
+  }
+
+  function paymentsOf(transactions: IssuanceTransaction[], issuer: string): MptPayment[] {
+    return transactions.flatMap((tx) =>
+      tx.type === 'Payment' && tx.account === issuer && tx.destination && tx.amountRaw !== undefined
+        ? [{ destination: tx.destination, amountRaw: tx.amountRaw, memos: tx.memos, hash: tx.hash, ledgerIndex: tx.ledgerIndex, sequence: tx.sequence, date: tx.date }]
+        : [],
+    )
+  }
+
+  async function main() {
+    const config = await loadPublicConfig()
+    const issuer = requireIssuer(config)
+    const governance = requireGovernance(config)
+    const mptIssuanceId = requireMptIssuanceId(config)
+    const ticker = config.token.ticker
+    const seats = seatsOf(config, 'register')
+    const units = (raw: string) => `${formatUnits(raw)} ${ticker}`
+
+    let requireAuth = configRequiresAuth(config) ?? false
+    let canLock = true
+    let canClawback = true
+    let history: RegisterHistory = { transactions: [], actions: [], admissions: [], payments: [], pairs: [] }
+    /**
+     * Whether `history` has been read from the ledger at least once. Until it
+     * has, the next replacement reference isn't known, so no replacement starts.
+     */
+    let historyState: 'loading' | 'read' | 'failed' = 'loading'
+    let deliveries: MptPayment[] = []
+    let holdings: Holding[] = []
+
+    function ctx(): ProposalContext {
+      return {
+        ticker,
+        mptIssuanceId,
+        issuer: issuer.address,
+        desk: governance.address,
+        replacements: { actions: history.actions, reissues: reissuesOf(history.payments, governance.address) },
+      }
+    }
+
+    $('stop-note').textContent = `Needs ${numberWord(issuer.quorum)} of ${numberWord(issuer.signers.length)} Register keys. The holder keeps their units but can't transfer them to anyone else. They can still return units to the Register.`
+
+    function showView(view: ViewId | undefined) {
+      for (const id of VIEWS) $(id).hidden = id !== view
+      $('unfinished').hidden = view !== 'stop-form' || $('unfinished').innerHTML === ''
+    }
+
+    function showResult(result: ResultId | undefined) {
+      for (const id of RESULTS) $(id).hidden = id !== result
+      // Back on the controls: connection changes may show or hide them again.
+      if (result === undefined) inFlight = false
+      controls.hidden = result !== undefined || !connectedAddress || !seatOn(config, 'register', connectedAddress)
+    }
+
+    /** Back to the stop-transfer form, with fresh holdings. */
+    function restart() {
+      stopWatching?.()
+      inFlight = false
+      pageError.textContent = ''
+      showResult(undefined)
+      showView('stop-form')
+      holderInput.value = ''
+      holderWarning.innerHTML = ''
+      setStopReady(undefined)
+      void refresh()
+    }
+
+    async function readHistory(): Promise<RegisterHistory> {
+      const transactions = await getIssuanceTransactions(issuer.address, mptIssuanceId)
+      const actions = controlActionsOf(transactions, issuer.address)
+      const payments = paymentsOf(transactions, issuer.address)
+      const { pairs } = pairReplacements(actions, reissuesOf(payments, governance.address))
+      return { transactions, actions, admissions: admissionsOf(transactions, issuer.address), payments, pairs }
+    }
+
+    /** Recent accounts that may hold units, newest first: delivery and re-issue destinations, admissions, controlled holders. */
+    function candidateHolders(): string[] {
+      const seen: Array<{ address: string; at: number }> = [
+        ...deliveries.map((p) => ({ address: p.destination, at: p.ledgerIndex ?? 0 })),
+        ...history.payments.map((p) => ({ address: p.destination, at: p.ledgerIndex ?? 0 })),
+        ...history.admissions.map((a) => ({ address: a.holder, at: a.ledgerIndex ?? 0 })),
+        ...history.actions.map((a) => ({ address: a.holder, at: a.ledgerIndex ?? 0 })),
+      ].sort((a, b) => b.at - a.at)
+      const out: string[] = []
+      for (const { address } of seen) {
+        if (address === issuer.address || address === governance.address || out.includes(address)) continue
+        out.push(address)
+        if (out.length >= MAX_HOLDINGS) break
+      }
+      return out
+    }
+
+    async function readHoldings(addresses: string[]): Promise<Holding[]> {
+      const read = await Promise.allSettled(addresses.map((address) => getMptHolding(address, mptIssuanceId)))
+      return addresses.flatMap((address, i) => {
+        const result = read[i]
+        return result?.status === 'fulfilled' ? [{ address, ...result.value }] : []
+      })
+    }
+
+    // ---------- Unfinished replacements ----------
+
+    function renderUnfinished() {
+      const open = unfinishedReplacements(history.pairs)
+      const container = $('unfinished')
+      container.innerHTML = open
+        .map(
+          (pair) => `<div class="panel panel-alert" style="gap:8px">
+            <span class="panel-label">Replacement in progress · ${esc(pair.ref)}</span>
+            <span>${sentenceHtml(`${units(pair.clawback.amountRaw ?? '0')} were clawed back from ${shortAddress(pair.clawback.holder)}${pair.clawback.date ? ` on ${formatShortDate(pair.clawback.date)}` : ''}. They're out of issue until step 2 re-issues them to the new wallet.`)}</span>
+            <div><button type="button" class="btn btn-primary" data-continue="${esc(pair.clawback.hash ?? '')}">Continue to step 2</button></div>
+          </div>`,
+        )
+        .join('')
+      for (const button of container.querySelectorAll<HTMLButtonElement>('[data-continue]')) {
+        button.addEventListener('click', () => {
+          const pair = unfinishedReplacements(history.pairs).find((p) => p.clawback.hash === button.dataset.continue)
+          if (pair) void showReissue(pair)
+        })
+      }
+      container.hidden = $('stop-form').hidden || open.length === 0
+    }
+
+    // ---------- Stop-transfer ----------
+
+    function renderPicks() {
+      // A lost wallet whose replacement is complete is empty and stays stopped: it isn't a holding to act on.
+      const replaced = new Set(history.pairs.filter((pair) => pair.reissue).map((pair) => pair.clawback.holder))
+      const empty = (h: Holding) => BigInt(h.balanceRaw) === 0n
+      const shown = holdings
+        .filter((h) => h.hasHolding && (!empty(h) || h.locked) && !(empty(h) && replaced.has(h.address)))
+        // Holdings with units first, newest activity first; an emptied, stopped wallet after them.
+        .sort((a, b) => Number(empty(a)) - Number(empty(b)))
+        .slice(0, MAX_PICKS)
+      $('picks').innerHTML = shown
+        .map(
+          (h) => `<label class="pick">
+            <input type="radio" name="holding" value="${esc(h.address)}" />
+            <span class="pick-main"><span class="radio" aria-hidden="true"></span><span class="pick-addr" title="${esc(h.address)}">${esc(shortAddress(h.address))}</span></span>
+            <span class="pick-status">${esc(units(h.balanceRaw))}${h.locked ? ' · stopped' : ''}</span>
+          </label>`,
+        )
+        .join('')
+      const label = $('holder-label')
+      label.textContent = shown.length > 0 ? 'Or another holding address' : 'Holding address'
+      label.classList.toggle('sr-only', shown.length === 0)
+      $('picks-note').textContent = shown.length > 0 ? '' : 'No investor holdings found in recent history. Enter the holder’s address.'
+      for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="holding"]')) {
+        radio.checked = radio.value === holderInput.value.trim()
+        radio.addEventListener('change', () => {
+          holderInput.value = radio.value
+          void checkHolder()
+        })
+      }
+    }
+
+    /** The holding last read as ready to stop; undefined until then. */
+    let readyHolder: string | undefined
+
+    function setStopReady(holder: string | undefined) {
+      readyHolder = holder
+      stopButton.disabled = !holder || !canLock
+    }
+
+    /**
+     * Reads the entered holding. An unlocked holding can be stopped; a
+     * stopped one opens the stopped panel. Anything else would fail on the
+     * ledger and still spend the fee (GhostSig doesn't preflight co-signed
+     * transactions).
+     */
+    async function checkHolder() {
+      const seq = ++checkSeq
+      const holder = holderInput.value.trim()
+      holderWarning.innerHTML = ''
+      setStopReady(undefined)
+      if (!holder) return
+      if (!isValidClassicAddress(holder)) {
+        holderWarning.innerHTML = '<div class="status error">That isn’t a valid XRPL address.</div>'
+        return
+      }
+      if (holder === issuer.address) {
+        holderWarning.innerHTML = '<div class="status error">That’s the Register’s own account. It issues units; it doesn’t hold them.</div>'
+        return
+      }
+      if (holder === governance.address) {
+        holderWarning.innerHTML =
+          '<div class="status error">That’s the Dealing Desk. Stop-transfers here are for investor holdings.</div>'
+        return
+      }
+      try {
+        const holding = await getMptHolding(holder, mptIssuanceId)
+        if (seq !== checkSeq) return
+        if (!holding.hasHolding) {
+          holderWarning.innerHTML = readinessHtml({
+            blocked: true,
+            label: 'No holding',
+            lines: [`${shortAddress(holder)} has no ${ticker} holding on the ledger, so there's nothing to stop. The ledger would reject it.`],
+          })
+          return
+        }
+        if (holding.locked) {
+          showStopped({ address: holder, ...holding })
+          return
+        }
+        setStopReady(holder)
+      } catch {
+        if (seq !== checkSeq) return
+        holderWarning.innerHTML = '<div class="status">Could not check the holding. Try again before signing.</div>'
+      }
+    }
+
+    holderInput.addEventListener('input', () => {
+      checkSeq++
+      holderWarning.innerHTML = ''
+      setStopReady(undefined)
+      const value = holderInput.value.trim()
+      for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="holding"]')) radio.checked = radio.value === value
+    })
+    holderInput.addEventListener('blur', () => void checkHolder())
+
+    stopForm.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      pageError.textContent = ''
+      const holder = holderInput.value.trim()
+      const reason = reasonInput.value.trim()
+      if (!reason) {
+        pageError.textContent = 'Enter the reason. It goes on the ledger as the stop-transfer’s memo.'
+        return
+      }
+      await checkHolder()
+      if (readyHolder !== holder) return
+      const tx = await buildStopTx(issuer.address, holder, mptIssuanceId, issuer.quorum, 'lock', reasonMemo(reason)).catch((err: unknown) => {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+        return undefined
+      })
+      if (!tx) return
+      await runCeremony(tx, stopButton, async () => {
+        await refresh()
+        const holding = await getMptHolding(holder, mptIssuanceId).catch(() => undefined)
+        showResult(undefined)
+        if (holding?.locked) showStopped({ address: holder, ...holding })
+        else restart()
+      })
+    })
+
+    // ---------- Stopped ----------
+
+    /** The holding the stopped panel shows, so a fresh read of the register ledger can redraw it. */
+    let stoppedHolding: Holding | undefined
+
+    function showStopped(holding: Holding) {
+      checkSeq++
+      stoppedHolding = holding
+      showView('stopped')
+      const stop = currentStop(history.actions, holding.address)
+      const reason = stop?.reason
+      const who = shortAddress(holding.address)
+      const lostKey = reason ? reason.toLowerCase().includes(LOST_KEY) : false
+      // The reason and the next replacement reference both come from the register ledger: no replacement starts before it's read.
+      const reasonLine =
+        historyState === 'loading'
+          ? 'Reading the register ledger for the reason and the next replacement reference…'
+          : historyState === 'failed'
+            ? 'The register ledger couldn’t be read, so this page can’t show the reason or the next replacement reference. Reload to try again.'
+            : !reason
+              ? 'The register ledger this page read has no reason memo for this stop.'
+              : lostKey
+                ? `Reason: ${reason}. Release the stop if the holder finds their key, or replace the units to a new wallet.`
+                : `Reason: ${reason}. Release the stop when the matter is closed. If the holder has lost their key, replace the units to a new wallet.`
+      const unfinished = unfinishedReplacements(history.pairs).find((pair) => pair.clawback.holder === holding.address)
+      const empty = BigInt(holding.balanceRaw) === 0n
+      const replaceButton = unfinished
+        ? `<button type="button" class="btn btn-primary" data-continue>Continue to step 2</button>`
+        : `<button type="button" class="btn btn-primary" data-replace${empty || !canClawback || historyState !== 'read' ? ' disabled' : ''}>Start lost-key replacement</button>`
+      const panel = $('stopped')
+      panel.innerHTML = `
+        <span class="panel-label">Stop-transfer in place</span>
+        <p class="result-sentence">${sentenceHtml(`Transfers paused on ${who} (${units(holding.balanceRaw)}).`)}</p>
+        <p class="body-2">${sentenceHtml(reasonLine)}</p>
+        <p class="small-muted">The holder can still return units to the Register, and the Register can still pay them. Transfers to anyone else are refused while the stop is in place.</p>
+        ${empty && !unfinished ? '<p class="small-muted">Nothing to replace: the holding is empty.</p>' : ''}
+        ${!canClawback ? '<p class="small-muted">This issuance doesn’t set CanClawback, so the ledger would reject a claw-back.</p>' : ''}
+        <div class="row-wrap">
+          ${replaceButton}
+          <button type="button" class="btn btn-secondary" data-release>Release stop-transfer</button>
+        </div>
+        <div><button type="button" class="link-button" data-other>Choose another holding</button></div>`
+      panel.querySelector('[data-replace]')?.addEventListener('click', () => showClaw(holding))
+      panel.querySelector('[data-continue]')?.addEventListener('click', () => unfinished && void showReissue(unfinished))
+      panel.querySelector('[data-release]')!.addEventListener('click', () => showRelease(holding))
+      panel.querySelector('[data-other]')!.addEventListener('click', () => restart())
+    }
+
+    // ---------- Release ----------
+
+    let releaseHolder: Holding | undefined
+
+    function showRelease(holding: Holding) {
+      releaseHolder = holding
+      showView('release-form')
+      $('release-text').innerHTML = sentenceHtml(
+        `Lift the stop-transfer on ${shortAddress(holding.address)} (${units(holding.balanceRaw)}), so its units can move again.`,
+      )
+    }
+
+    $('release-cancel').addEventListener('click', () => releaseHolder && showStopped(releaseHolder))
+
+    releaseForm.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      pageError.textContent = ''
+      const holding = releaseHolder
+      if (!holding) return
+      const reason = releaseReason.value.trim()
+      if (!reason) {
+        pageError.textContent = 'Enter the reason. It goes on the ledger as the release’s memo.'
+        return
+      }
+      const tx = await buildStopTx(issuer.address, holding.address, mptIssuanceId, issuer.quorum, 'unlock', reasonMemo(reason)).catch(
+        (err: unknown) => {
+          pageError.textContent = err instanceof Error ? err.message : String(err)
+          return undefined
+        },
+      )
+      if (!tx) return
+      const preview = describeProposal(tx, ctx())
+      await runCeremony(tx, releaseButton, (hash) => {
+        const panel = $('done')
+        panel.innerHTML = `
+          <span class="panel-label">${issuer.quorum} of ${issuer.quorum} keys · Released</span>
+          <p class="result-sentence">${sentenceHtml(preview.doneSentence)}</p>
+          <p class="body-2">Its units can move again. The release and its memo are in the register ledger.</p>
+          <div class="row-wrap">
+            <button type="button" class="btn btn-primary" data-restart>Back to controls</button>
+            ${explorerButton(hash)}
+          </div>`
+        showResult('done')
+        panel.querySelector('[data-restart]')!.addEventListener('click', () => restart())
+      })
+    })
+
+    // ---------- Lost-key replacement ----------
+
+    function stepperHtml(step: 1 | 2): string {
+      return step === 1
+        ? `<div class="step current"><span class="step-label">Step 1</span><span class="step-title">Claw back from old wallet</span></div>
+           <div class="step"><span class="step-label">Step 2</span><span class="step-title">Re-issue to new wallet</span></div>`
+        : `<div class="step done"><span class="step-label">Step 1 ✓</span><span class="step-title">Clawed back</span></div>
+           <div class="step current"><span class="step-label">Step 2</span><span class="step-title">Re-issue to new wallet</span></div>`
+    }
+
+    function memoBlock(ref: string): string {
+      return `<div class="stack-tight" style="gap:4px"><span class="label">Reason memo (shared by both steps)</span><span class="memo-value">${esc(`${ref} · ${LOST_KEY}`)}</span></div>`
+    }
+
+    function unitsRow(raw: string): string {
+      return `<div class="units-row"><span class="units-key">Units</span><span class="units-value">${esc(units(raw))}</span></div>`
+    }
+
+    function nextReplacementRef(): string {
+      return suggestReplacementRef(history.transactions.map((tx) => tx.memos))
+    }
+
+    /**
+     * Step 1: claw the whole holding back from the stopped, lost wallet under
+     * a new `REPL-…` reference. `notice` explains a reference that changed
+     * since the page last showed one.
+     */
+    function showClaw(holding: Holding, notice?: string) {
+      showView('replace')
+      const ref = nextReplacementRef()
+      $('stepper').innerHTML = stepperHtml(1)
+      replaceForm.innerHTML = `
+        ${notice ? `<div class="status">${esc(notice)}</div>` : ''}
+        <div class="stack-tight" style="gap:4px"><span class="label">From (old wallet)</span><span class="wallet-value">${esc(holding.address)}</span></div>
+        ${unitsRow(holding.balanceRaw)}
+        ${memoBlock(ref)}
+        <p class="small-muted">The claw-back takes the whole holding off the old wallet. Units in issue are lower until step 2 re-issues them to the new wallet.</p>
+        <div class="row-wrap" style="gap:10px">
+          <button type="submit" class="btn btn-primary btn-lg" data-sign>Sign claw-back</button>
+          <button type="button" class="btn btn-secondary btn-lg" data-back>Back</button>
+        </div>`
+      replaceForm.querySelector('[data-back]')!.addEventListener('click', () => showStopped(holding))
+      replaceForm.onsubmit = async (event) => {
+        event.preventDefault()
+        pageError.textContent = ''
+        const button = replaceForm.querySelector<HTMLButtonElement>('[data-sign]')!
+        // Re-read: the whole holding, and only while the stop is still in place.
+        const fresh = await getMptHolding(holding.address, mptIssuanceId).catch(() => undefined)
+        if (!fresh) {
+          pageError.textContent = 'Could not read the holding. Try again before signing.'
+          return
+        }
+        if (!fresh.locked) {
+          pageError.textContent = 'The stop-transfer on this holding has been released. A replacement starts with a stop.'
+          return
+        }
+        if (BigInt(fresh.balanceRaw) === 0n) {
+          pageError.textContent = 'The holding is empty: there’s nothing to claw back.'
+          return
+        }
+        // Re-read the register ledger: a replacement that landed since this step opened takes the reference shown.
+        const latest = await readHistory().catch(() => undefined)
+        if (!latest) {
+          pageError.textContent = 'Could not read the register ledger to confirm the replacement reference. Try again before signing.'
+          return
+        }
+        history = latest
+        historyState = 'read'
+        if (nextReplacementRef() !== ref) {
+          showClaw(
+            { address: holding.address, ...fresh },
+            `The register ledger has a newer replacement than when this step opened, so this one is ${nextReplacementRef()}. Check the memo, then sign.`,
+          )
+          return
+        }
+        const tx = await buildClawbackTx(issuer.address, holding.address, mptIssuanceId, fresh.balanceRaw, issuer.quorum, replacementMemo(ref)).catch(
+          (err: unknown) => {
+            pageError.textContent = err instanceof Error ? err.message : String(err)
+            return undefined
+          },
+        )
+        if (!tx) return
+        const sequence = typeof tx.Sequence === 'number' ? tx.Sequence : undefined
+        await runCeremony(tx, button, async (hash) => {
+          const pair = await findPair({ sequence, hash })
+          showResult(undefined)
+          if (pair) void showReissue(pair)
+          else restart()
+        })
+      }
+    }
+
+    /** The replacement this clawback started, once it's on the ledger; a fresh read may lag the validation by a moment. */
+    async function findPair(clawback: { sequence?: number; hash?: string }): Promise<ReplacementPair | undefined> {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await refresh()
+        const pair = replacementOfClawback(history.pairs, clawback)
+        if (pair) return pair
+        await new Promise((resolve) => setTimeout(resolve, 3000))
+      }
+      return undefined
+    }
+
+    /** Step 2: re-issue exactly the clawed-back units to a new wallet that's on the register. */
+    async function showReissue(pair: ReplacementPair) {
+      showView('replace')
+      const amountRaw = pair.clawback.amountRaw ?? '0'
+      $('stepper').innerHTML = stepperHtml(2)
+      const toLabel = requireAuth ? 'To (new wallet, admitted)' : 'To (new wallet)'
+      replaceForm.innerHTML = `
+        <span class="small-muted">${sentenceHtml(`Clawed back from ${shortAddress(pair.clawback.holder)}${pair.clawback.date ? ` on ${formatShortDate(pair.clawback.date)}` : ''}.`)}</span>
+        <fieldset class="field" style="border:0;margin:0;padding:0">
+          <legend class="label" style="padding:0;margin-bottom:6px">${esc(toLabel)}</legend>
+          <div class="picks" data-picks></div>
+          <label for="new-wallet" class="small-muted sr-only" data-new-label style="margin-top:4px">New wallet address</label>
+          <input id="new-wallet" class="input mono" placeholder="r…" autocomplete="off" spellcheck="false" />
+        </fieldset>
+        <div data-warning></div>
+        ${unitsRow(amountRaw)}
+        ${memoBlock(pair.ref)}
+        <div><button type="submit" class="btn btn-primary btn-lg" data-sign disabled>Sign re-issue</button></div>`
+      const input = replaceForm.querySelector<HTMLInputElement>('#new-wallet')!
+      const warning = replaceForm.querySelector<HTMLElement>('[data-warning]')!
+      const button = replaceForm.querySelector<HTMLButtonElement>('[data-sign]')!
+      let ready: string | undefined
+      let seq = 0
+
+      const check = async () => {
+        const mine = ++seq
+        ready = undefined
+        button.disabled = true
+        warning.innerHTML = ''
+        const destination = input.value.trim()
+        if (!destination) return
+        if (!isValidClassicAddress(destination)) {
+          warning.innerHTML = '<div class="status error">That isn’t a valid XRPL address.</div>'
+          return
+        }
+        if (destination === pair.clawback.holder) {
+          warning.innerHTML = '<div class="status error">That’s the lost wallet. The units go to the holder’s new wallet.</div>'
+          return
+        }
+        if (destination === issuer.address || destination === governance.address) {
+          warning.innerHTML = '<div class="status error">The new wallet must be the investor’s own account, not the Register or the Dealing Desk.</div>'
+          return
+        }
+        try {
+          const notice = await checkTransfer(issuer.address, destination, mptIssuanceId, { source: 'The Register', amount: amountRaw, requireAuth })
+          if (mine !== seq) return
+          if (notice) {
+            const admit =
+              notice.label === 'Not on the register'
+                ? `<div><a class="btn btn-secondary" href="${esc(withBase('/admit'))}">Admit investor</a></div>`
+                : ''
+            warning.innerHTML = readinessHtml(notice, admit)
+            if (notice.blocked) return
+          }
+          ready = destination
+          button.disabled = false
+        } catch {
+          if (mine !== seq) return
+          warning.innerHTML = '<div class="status">Could not check the new wallet. Try again before signing.</div>'
+        }
+      }
+
+      input.addEventListener('input', () => {
+        seq++
+        ready = undefined
+        button.disabled = true
+        warning.innerHTML = ''
+        for (const radio of replaceForm.querySelectorAll<HTMLInputElement>('input[name="new-wallet"]')) radio.checked = radio.value === input.value.trim()
+      })
+      input.addEventListener('blur', () => void check())
+
+      replaceForm.onsubmit = async (event) => {
+        event.preventDefault()
+        pageError.textContent = ''
+        await check()
+        const destination = ready
+        if (!destination || destination !== input.value.trim()) return
+        const tx = await buildProposalPaymentTx(issuer.address, destination, mptIssuanceId, amountRaw, issuer.quorum, replacementMemo(pair.ref)).catch(
+          (err: unknown) => {
+            pageError.textContent = err instanceof Error ? err.message : String(err)
+            return undefined
+          },
+        )
+        if (!tx) return
+        await runCeremony(tx, button, async (hash) => {
+          await refresh().catch(() => undefined)
+          showPaired(pair, destination, amountRaw, hash)
+        })
+      }
+
+      // Wallets on the register that could receive the units: admitted, not stopped, not the lost one.
+      const candidates = [...new Set([...history.admissions.map((a) => a.holder), ...holdings.map((h) => h.address)])].filter(
+        (address) => address !== pair.clawback.holder && address !== issuer.address && address !== governance.address,
+      )
+      const read = await readHoldings(candidates.slice(0, MAX_HOLDINGS))
+      // Empty wallets first: a replacement wallet is usually new.
+      const picks = read
+        .filter((h) => h.hasHolding && !h.locked && (!requireAuth || h.admitted))
+        .sort((a, b) => Number(BigInt(a.balanceRaw) > 0n) - Number(BigInt(b.balanceRaw) > 0n))
+        .slice(0, MAX_PICKS)
+      const pickBox = replaceForm.querySelector<HTMLElement>('[data-picks]')
+      if (!pickBox) return
+      pickBox.innerHTML = picks
+        .map(
+          (h) => `<label class="pick">
+            <input type="radio" name="new-wallet" value="${esc(h.address)}" />
+            <span class="pick-main"><span class="radio" aria-hidden="true"></span><span class="pick-addr" title="${esc(h.address)}">${esc(shortAddress(h.address))}</span></span>
+            <span class="pick-status">${requireAuth ? 'Admitted' : 'Holding'}${BigInt(h.balanceRaw) > 0n ? ` · ${esc(units(h.balanceRaw))}` : ''}</span>
+          </label>`,
+        )
+        .join('')
+      const label = replaceForm.querySelector<HTMLElement>('[data-new-label]')!
+      label.textContent = picks.length > 0 ? 'Or another address' : 'New wallet address'
+      label.classList.toggle('sr-only', picks.length === 0)
+      for (const radio of pickBox.querySelectorAll<HTMLInputElement>('input[name="new-wallet"]')) {
+        radio.addEventListener('change', () => {
+          input.value = radio.value
+          void check()
+        })
+      }
+    }
+
+    /** Both legs are on the ledger: the result, and the pair as the register ledger groups it. */
+    function showPaired(pair: ReplacementPair, destination: string, amountRaw: string, hash?: string) {
+      const entries = buildRegisterLedgerEntries({
+        issuerPayments: history.payments,
+        deskPayments: [],
+        controls: history.actions,
+        issuer: issuer.address,
+        desk: governance.address,
+        ticker,
+      })
+      const group = entries.find((entry) => entry.kind === 'group' && entry.ref === pair.ref)
+      const panel = $('paired')
+      panel.innerHTML = `
+        <div class="panel panel-success">
+          <span class="panel-label">Replacement complete</span>
+          <p class="result-sentence">${sentenceHtml(`${units(amountRaw)} moved from the lost wallet to ${shortAddress(destination)}.`)}</p>
+          <p class="body-2">Units in issue are unchanged. Both steps are grouped in the register ledger under one reference.</p>
+          <div class="row-wrap">
+            <a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>
+            ${explorerButton(hash)}
+          </div>
+        </div>
+        ${group?.kind === 'group' ? ledgerGroupHtml(group) : ''}`
+      showResult('paired')
+    }
+
+    // ---------- Ceremony ----------
+
+    function explorerButton(hash: string | undefined): string {
+      return hash
+        ? `<a class="btn btn-secondary" href="${esc(`${TESTNET_EXPLORER_BASE}/transactions/${hash}`)}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a>`
+        : ''
+    }
+
+    /** The proposal settled without going through: drop the stale handoff card and say why. */
+    function showNotCompleted(status: ProblemStatus, preview: ProposalPreview) {
+      stopWatching?.()
+      const panel = $('not-completed')
+      panel.innerHTML = problemPanelHtml(
+        status,
+        preview.sentence,
+        '<button type="button" class="btn btn-primary" data-restart>Back to controls</button>',
+        problemOptionsFor(preview.kind),
+      )
+      showResult('not-completed')
+      panel.querySelector('[data-restart]')?.addEventListener('click', () => restart())
+    }
+
+    /**
+     * Propose → relay → co-sign: sign `tx` as the first Register key, show
+     * the handoff card with the relay line decoded from the transaction, and
+     * call `onDone` once the ledger shows it went through.
+     */
+    async function runCeremony(tx: Record<string, unknown>, button: HTMLButtonElement, onDone: (hash?: string) => void | Promise<void>) {
+      if (!connectedAddress) return
+      const address = connectedAddress
+      const preview = describeProposal(tx, ctx())
+      const label = button.textContent ?? ''
+      button.disabled = true
+      button.classList.add('is-waiting')
+      button.textContent = 'Waiting for your passkey…'
+      try {
+        const outcome = await signCeremonyPayload(tx, address)
+        if (outcome.status === 'error') throw new Error(outcome.message)
+        inFlight = true
+        const handoff = $('handoff')
+        if (outcome.status === 'submitted') {
+          handoff.className = 'card'
+          handoff.innerHTML = `<p class="body-2">${sentenceHtml(preview.sentence)}</p><p class="meta">Submitted to the XRPL testnet. Waiting for it to validate…</p>`
+        } else {
+          await renderHandoff(handoff, {
+            keySet: 'register',
+            seats,
+            signed: new Set([address]),
+            quorum: issuer.quorum,
+            relay: preview.relay ?? preview.sentence,
+            shareUrl: outcome.shareUrl,
+          })
+        }
+        showResult('handoff')
+        if (typeof tx.Sequence === 'number') {
+          stopWatching?.()
+          stopWatching = watchProposal(tx, (status) => {
+            if (status.status === 'done') void onDone(status.hash)
+            else showNotCompleted(status, preview)
+          })
+        }
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+      } finally {
+        button.classList.remove('is-waiting')
+        button.textContent = label
+        button.disabled = false
+      }
+    }
+
+    // ---------- Loading ----------
+
+    async function refresh() {
+      const [historyRead, deskRead] = await Promise.allSettled([readHistory(), getOutgoingMptPayments(governance.address, mptIssuanceId)])
+      if (historyRead.status === 'fulfilled') {
+        history = historyRead.value
+        historyState = 'read'
+      } else if (historyState === 'loading') {
+        historyState = 'failed'
+      }
+      if (deskRead.status === 'fulfilled') deliveries = [...deskRead.value].sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0))
+      holdings = await readHoldings(candidateHolders())
+      renderPicks()
+      renderUnfinished()
+      // The stopped panel's reason, replacement state and button depend on the history: redraw it if it's showing.
+      if (!$('stopped').hidden && stoppedHolding) showStopped(stoppedHolding)
+      if (historyRead.status === 'rejected') {
+        $('picks-note').textContent = 'The register ledger couldn’t be read right now. Enter the holder’s address.'
+      }
+    }
+
+    onConnectionChange((address) => {
+      connectedAddress = address ?? undefined
+      const seat = address ? seatOn(config, 'register', address) : undefined
+      const nonSigner = $('non-signer')
+      if (!seat) {
+        nonSigner.innerHTML = nonSignerHtml('register', signerRole(config, address), NON_SIGNER_CONTROLS)
+        nonSigner.hidden = false
+        controls.hidden = true
+        return
+      }
+      nonSigner.hidden = true
+      if (!inFlight) {
+        controls.hidden = false
+        if (VIEWS.every((id) => $(id).hidden)) showView('stop-form')
+      }
+    })
+
+    const issuance = await getIssuanceState(mptIssuanceId).catch(() => undefined)
+    if (issuance) {
+      requireAuth = Boolean(issuance.flags.lsfMPTRequireAuth)
+      canLock = Boolean(issuance.flags.lsfMPTCanLock)
+      canClawback = Boolean(issuance.flags.lsfMPTCanClawback)
+      $('no-lock').hidden = canLock
+      setStopReady(readyHolder)
+    }
+    await refresh()
+  }
+
+  window.addEventListener('pagehide', () => stopWatching?.())
+
+  main().catch((err) => {
+    pageError.textContent = err instanceof Error ? err.message : String(err)
+  })
+</script>

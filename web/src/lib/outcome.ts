@@ -1,3 +1,4 @@
+import type { ProposalKind } from './preview'
 import type { ProposalStatus } from './xrplClient'
 
 /** A proposal that settled without going through: failed on the ledger, superseded, or unreadable. */
@@ -22,6 +23,19 @@ export const ADMISSION_RESULT_MEANING: Record<string, string> = {
   tecOBJECT_NOT_FOUND: "the account had no holding to admit: it hasn't requested admission, or it withdrew the request.",
   tecNO_AUTH: "the issuance doesn't set RequireAuth, so there's no admission to give.",
   tecNO_DST: "the account doesn't exist on the testnet.",
+}
+
+/** What a `tec` result means for a stop-transfer or its release. */
+export const STOP_RESULT_MEANING: Record<string, string> = {
+  tecOBJECT_NOT_FOUND: 'the account has no holding of these units.',
+  tecNO_PERMISSION: "this issuance doesn't allow stop-transfers (it doesn't set CanLock).",
+}
+
+/** What a `tec` result means for a clawback. */
+export const CLAWBACK_RESULT_MEANING: Record<string, string> = {
+  tecOBJECT_NOT_FOUND: 'the account has no holding of these units.',
+  tecNO_PERMISSION: "this issuance doesn't allow claw-backs (it doesn't set CanClawback).",
+  tecINSUFFICIENT_FUNDS: 'the holding had no units to claw back.',
 }
 
 export interface ProblemOptions {
@@ -58,5 +72,20 @@ export function problemCopy(status: ProblemStatus, opts: ProblemOptions = {}): P
     label: "Couldn't confirm",
     headline: "This proposal's sequence has been used, but the transaction that used it couldn't be read.",
     detail: 'Check the register ledger to see whether it went through before proposing it again.',
+  }
+}
+
+/** The failure copy for a proposal of this kind: payments keep the defaults. */
+export function problemOptionsFor(kind: ProposalKind): ProblemOptions {
+  switch (kind) {
+    case 'admit':
+      return { effect: 'Nothing changed on the register.', meanings: ADMISSION_RESULT_MEANING }
+    case 'stop':
+    case 'release':
+      return { effect: 'Nothing changed on the register.', meanings: STOP_RESULT_MEANING }
+    case 'clawback':
+      return { meanings: CLAWBACK_RESULT_MEANING }
+    default:
+      return {}
   }
 }

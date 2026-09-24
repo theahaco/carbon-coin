@@ -211,6 +211,13 @@ export interface IssuanceTransaction {
   type: string
   account: string
   holder?: string
+  /** A payment's destination. */
+  destination?: string
+  /**
+   * The units that moved, raw: a payment's delivered amount, or what a
+   * clawback actually took (the ledger claws at most the holder's balance).
+   */
+  amountRaw?: string
   flags: number
   memos: TextMemo[]
   hash?: string
@@ -219,22 +226,59 @@ export interface IssuanceTransaction {
   date?: Date
 }
 
+interface MetaNode {
+  ModifiedNode?: {
+    LedgerEntryType?: unknown
+    FinalFields?: { OutstandingAmount?: unknown }
+    PreviousFields?: { OutstandingAmount?: unknown }
+  }
+}
+
+/**
+ * How far a transaction lowered the issuance's units in issue, from its
+ * metadata: what a clawback actually took. Undefined when the metadata
+ * doesn't show the issuance.
+ */
+function issuanceDecreaseOf(meta: { AffectedNodes?: unknown }): string | undefined {
+  const nodes = Array.isArray(meta.AffectedNodes) ? (meta.AffectedNodes as MetaNode[]) : []
+  const node = nodes.find((n) => n.ModifiedNode?.LedgerEntryType === 'MPTokenIssuance')?.ModifiedNode
+  if (!node) return undefined
+  const previous = node.PreviousFields?.OutstandingAmount
+  // Unchanged fields aren't in PreviousFields; a zero amount is left out of FinalFields.
+  if (typeof previous !== 'string') return '0'
+  const final = typeof node.FinalFields?.OutstandingAmount === 'string' ? node.FinalFields.OutstandingAmount : '0'
+  return (BigInt(previous) - BigInt(final)).toString()
+}
+
+function mptValueOf(amount: unknown): string | undefined {
+  const value = (amount as { value?: unknown } | undefined)?.value
+  return typeof amount === 'object' && amount !== null && typeof value === 'string' ? value : undefined
+}
+
 /** Reads one API v1 `account_tx` row. Undefined unless it's validated, succeeded and names this issuance. */
 export function issuanceTransactionOf(
   row: { tx?: unknown; meta?: unknown; validated?: unknown },
   mptIssuanceId: string,
 ): IssuanceTransaction | undefined {
   const tx = row.tx as Record<string, unknown> | undefined
-  const meta = row.meta as { TransactionResult?: unknown } | string | undefined
+  const meta = row.meta as { TransactionResult?: unknown; AffectedNodes?: unknown; delivered_amount?: unknown } | string | undefined
   if (row.validated !== true || !tx || typeof meta !== 'object' || meta.TransactionResult !== 'tesSUCCESS') return undefined
   const amount = tx.Amount as { mpt_issuance_id?: unknown } | string | undefined
   const namesIssuance =
     tx.MPTokenIssuanceID === mptIssuanceId || (typeof amount === 'object' && amount !== null && amount.mpt_issuance_id === mptIssuanceId)
   if (!namesIssuance || typeof tx.TransactionType !== 'string' || typeof tx.Account !== 'string') return undefined
+  const amountRaw =
+    tx.TransactionType === 'Clawback'
+      ? (issuanceDecreaseOf(meta) ?? mptValueOf(amount))
+      : tx.TransactionType === 'Payment'
+        ? (mptValueOf(meta.delivered_amount) ?? mptValueOf(amount))
+        : undefined
   return {
     type: tx.TransactionType,
     account: tx.Account,
     holder: typeof tx.Holder === 'string' ? tx.Holder : undefined,
+    destination: typeof tx.Destination === 'string' ? tx.Destination : undefined,
+    amountRaw,
     flags: typeof tx.Flags === 'number' ? tx.Flags : 0,
     memos: textMemos(tx.Memos as Parameters<typeof textMemos>[0]),
     hash: typeof tx.hash === 'string' ? tx.hash : undefined,
@@ -374,9 +418,11 @@ export interface ProposalIdentity {
   TransactionType?: unknown
   Destination?: unknown
   Amount?: unknown
-  /** The account an admission names (MPTokenAuthorize). */
+  /** The account an admission, stop-transfer or clawback names. */
   Holder?: unknown
   MPTokenIssuanceID?: unknown
+  /** A stop-transfer and its release differ only here (tfMPTLock, tfMPTUnlock). */
+  Flags?: unknown
 }
 
 export interface LandedTransaction {
@@ -435,8 +481,19 @@ function sameAmount(a: unknown, b: unknown): boolean {
   return Boolean(x && y) && x!.mpt_issuance_id === y!.mpt_issuance_id && String(x!.value) === String(y!.value)
 }
 
-/** Whether a landed transaction is this proposal: same sender, sequence, type, destination, amount, holder and issuance. */
+/** tfFullyCanonicalSig: set by some signers on any transaction, and says nothing about what it does. */
+const TF_FULLY_CANONICAL_SIG = 0x80000000
+
+/** Numeric flags without tfFullyCanonicalSig; an absent field is 0. Undefined for any other shape. */
+function flagBits(flags: unknown): number | undefined {
+  if (flags === undefined) return 0
+  if (typeof flags !== 'number') return undefined
+  return (flags & ~TF_FULLY_CANONICAL_SIG) >>> 0
+}
+
+/** Whether a landed transaction is this proposal: same sender, sequence, type, destination, amount, holder, issuance and flags. */
 export function isSameProposal(landed: Record<string, unknown>, proposal: ProposalIdentity): boolean {
+  const flags = flagBits(landed.Flags)
   return (
     landed.Account === proposal.Account &&
     landed.Sequence === proposal.Sequence &&
@@ -444,7 +501,9 @@ export function isSameProposal(landed: Record<string, unknown>, proposal: Propos
     landed.Destination === proposal.Destination &&
     sameAmount(landed.Amount, proposal.Amount) &&
     landed.Holder === proposal.Holder &&
-    landed.MPTokenIssuanceID === proposal.MPTokenIssuanceID
+    landed.MPTokenIssuanceID === proposal.MPTokenIssuanceID &&
+    flags !== undefined &&
+    flags === flagBits(proposal.Flags)
   )
 }
 

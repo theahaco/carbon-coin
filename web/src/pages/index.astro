@@ -201,12 +201,13 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     type MptPayment,
   } from '../lib/xrplClient'
   import { admissionsOf, admittedOn, type Admission } from '../lib/admission'
-  import { buildRegisterLedger, lastDeliveryLine, orderRefOf } from '../lib/ledger'
+  import { controlActionsOf, stoppedHoldingNote, type ControlAction } from '../lib/controls'
+  import { buildRegisterLedgerEntries, lastDeliveryLine, orderRefOf } from '../lib/ledger'
   import { currentDealingDay, formatDealingDay, formatEuro, illustrativeDealing, parseDealingMonth, suggestNextDealingDay } from '../lib/dealing'
-  import { esc, formatDate, formatShortDate, joinList } from '../lib/format'
+  import { esc, formatDate, joinList } from '../lib/format'
   import { holderRole, numberWord, seatFor, seatsOf } from '../lib/role'
   import { formatUnits, parseUnits } from '../lib/units'
-  import { readinessHtml, statusHtml } from '../lib/ui'
+  import { ledgerEntriesHtml, readinessHtml, statusHtml } from '../lib/ui'
   import { withBase } from '../lib/paths'
   import { getStoredAddress } from '../lib/session'
 
@@ -266,41 +267,36 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
   function renderLedger(
     issuerPayments: MptPayment[],
     deskPayments: MptPayment[],
-    admissions: Admission[] | undefined,
+    registerHistory: { admissions: Admission[]; controls: ControlAction[] } | undefined,
     issuer: string,
     desk: string,
     ticker: string,
   ) {
-    const rows = buildRegisterLedger({ issuerPayments, deskPayments, admissions, issuer, desk, ticker })
+    const entries = buildRegisterLedgerEntries({
+      issuerPayments,
+      deskPayments,
+      admissions: registerHistory?.admissions,
+      controls: registerHistory?.controls,
+      issuer,
+      desk,
+      ticker,
+    })
     const list = $('ledger-rows')
-    if (rows.length === 0) {
+    if (entries.length === 0) {
       list.innerHTML = '<li class="ledger-empty">No entries yet. The first dealing day\'s issue will appear here.</li>'
     } else {
-      list.innerHTML = rows
-        .slice(0, LEDGER_ROWS)
-        .map((row) => {
-          // ADMIT and REDEEM keep the ink stamp.
-          const stampClass = row.stamp === 'ISSUE' ? 'issue' : row.stamp === 'DELIVER' ? 'deliver' : ''
-          const inner = `
-            <span class="stamp ${stampClass}">${esc(row.stamp)}</span>
-            <span class="ledger-main">
-              <span class="ledger-title">${esc(row.title)}</span>
-              <span class="ledger-memo">${esc(row.memo)}</span>
-              ${row.offProcedure ? `<span class="ledger-flag">Off-procedure · ${esc(row.offProcedure)}</span>` : ''}
-            </span>
-            <span class="ledger-date">${row.date ? esc(formatShortDate(row.date)) : ''}${row.hash ? ' ↗' : ''}</span>`
-          return row.hash
-            ? `<li><a class="ledger-row" href="${esc(explorerTx(row.hash))}" target="_blank" rel="noopener noreferrer">${inner}</a></li>`
-            : `<li class="ledger-row">${inner}</li>`
-        })
-        .join('')
+      // A replacement's grouped rows count as one entry.
+      list.innerHTML = ledgerEntriesHtml(entries.slice(0, LEDGER_ROWS))
     }
-    if (admissions === undefined) {
-      list.insertAdjacentHTML('beforeend', '<li class="ledger-empty">Admissions couldn\'t be read right now. The explorer link below has every entry.</li>')
+    if (registerHistory === undefined) {
+      list.insertAdjacentHTML(
+        'beforeend',
+        '<li class="ledger-empty">Admissions, stop-transfers and replacements couldn\'t be read right now. The explorer link below has every entry.</li>',
+      )
     }
     const more = $('ledger-more') as HTMLAnchorElement
     more.href = explorerAccount(issuer)
-    more.textContent = rows.length > LEDGER_ROWS ? 'Earlier entries on the testnet explorer ↗' : "The Register's account on the testnet explorer ↗"
+    more.textContent = entries.length > LEDGER_ROWS ? 'Earlier entries on the testnet explorer ↗' : "The Register's account on the testnet explorer ↗"
   }
 
   function renderIssuersPanel(flags: MPTokenIssuanceFlagsInterface, masterDisabled: boolean) {
@@ -331,6 +327,8 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
   let requireAuthRead: Promise<boolean> = Promise.resolve(false)
   /** The Register's admissions, newest first; resolves to [] if the history can't be read. */
   let admissionsRead: Promise<Admission[]> = Promise.resolve([])
+  /** The Register's stop-transfers, releases and clawbacks, newest first; resolves to [] if the history can't be read. */
+  let controlsRead: Promise<ControlAction[]> = Promise.resolve([])
   /** Guards against an older, slower render overwriting a newer one (e.g. a disconnect mid-read). */
   let renderSeq = 0
 
@@ -370,7 +368,8 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
       const cta =
         seat.keySet === 'register'
           ? `<a class="btn btn-primary" href="${esc(withBase('/propose-mint'))}">Dealing day</a>
-             <a class="btn btn-secondary" href="${esc(withBase('/admit'))}">Admit investor</a>`
+             <a class="btn btn-secondary" href="${esc(withBase('/admit'))}">Admit investor</a>
+             <a class="btn btn-secondary" href="${esc(withBase('/controls'))}">Controls</a>`
           : `<a class="btn btn-primary" href="${esc(withBase('/propose-disbursement'))}">Deliver units</a>`
       accountBody.innerHTML = `
         <p class="body-2">Connected as the <strong style="color:var(--role-${seat.keySet})">${esc(seat.name)}</strong> seat of the ${setName} key. ${esc(tail)}</p>
@@ -390,7 +389,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
         return
       }
       const holding = await getMptHolding(address, mptIssuanceId)
-      const [history, requireAuth, admissions] = await Promise.all([deliveries, requireAuthRead, admissionsRead])
+      const [history, requireAuth, admissions, controls] = await Promise.all([deliveries, requireAuthRead, admissionsRead, controlsRead])
       if (seq !== renderSeq) return
       const role = holderRole(holding, requireAuth)
       showRoleInHeader(role)
@@ -417,7 +416,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
         </div>
         ${
           holding.locked
-            ? `<div class="panel panel-alert"><span class="panel-label">Stop-transfer in place</span><span>Transfers paused on this holding while the register reviews it. Your units are safe.</span></div>`
+            ? `<div class="panel panel-alert"><span class="panel-label">Stop-transfer in place</span><span>${esc(stoppedHoldingNote(controls, address, ticker))}</span></div>`
             : `<p class="body-2">${esc(accountLine)}</p>`
         }`
       if (!holding.locked) appendTransfer(address, mptIssuanceId, ticker)
@@ -575,6 +574,10 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
       (transactions) => admissionsOf(transactions, issuer.address),
       () => [],
     )
+    controlsRead = registerHistoryRead.then(
+      (transactions) => controlActionsOf(transactions, issuer.address),
+      () => [],
+    )
     onConnectionChange((address) => {
       void renderAccount(address)
     })
@@ -632,8 +635,11 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     }
 
     if (issuerPayments.status === 'fulfilled' && deskPayments.status === 'fulfilled') {
-      const admissions = registerHistory.status === 'fulfilled' ? admissionsOf(registerHistory.value, issuer.address) : undefined
-      renderLedger(issuerPayments.value, deskPayments.value, admissions, issuer.address, governance.address, ticker)
+      const history =
+        registerHistory.status === 'fulfilled'
+          ? { admissions: admissionsOf(registerHistory.value, issuer.address), controls: controlActionsOf(registerHistory.value, issuer.address) }
+          : undefined
+      renderLedger(issuerPayments.value, deskPayments.value, history, issuer.address, governance.address, ticker)
     } else {
       $('ledger-rows').innerHTML = '<li class="ledger-empty">The ledger history is unavailable right now. The explorer link below has every entry.</li>'
       ;($('ledger-more') as HTMLAnchorElement).href = explorerAccount(issuer.address)

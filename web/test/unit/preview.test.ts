@@ -102,6 +102,22 @@ describe('UNRECOGNISED: do not sign', () => {
     expect(preview.rawFields).toContainEqual(['TransactionType', 'MPTokenIssuanceSet'])
     expect(preview.rawFields).toContainEqual(['Flags', '0x00000001'])
     expect(preview.rawFields.map(([key]) => key)).not.toContain('SigningPubKey')
+    // A missing Holder is what makes this lock the whole class: the record says so, as the handoff's raw box does.
+    expect(preview.rawFields.slice(-2)).toEqual([
+      ['Holder', '(none)'],
+      ['Memos', '(none)'],
+    ])
+  })
+
+  it('names a missing Holder only where one decides what the transaction does, and a missing memo always', () => {
+    // A Payment from an account that's neither the Register nor the Desk, with no memo.
+    const stray = describeProposal(payment(INVESTOR, DESK, '1000000'), ctx)
+    expect(stray.kind).toBe('unrecognised')
+    expect(stray.rawFields).toContainEqual(['Memos', '(none)'])
+    expect(stray.rawFields.map(([key]) => key)).not.toContain('Holder')
+    const withHolder = describeProposal({ TransactionType: 'Clawback', Account: DESK, Holder: INVESTOR, Amount: '1' }, ctx)
+    expect(withHolder.kind).toBe('unrecognised')
+    expect(withHolder.rawFields.filter(([key]) => key === 'Holder')).toEqual([['Holder', INVESTOR]])
   })
 
   it('rejects a Payment from an unknown account', () => {
