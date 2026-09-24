@@ -1,9 +1,10 @@
-import { startRippledNode } from '../../devnet/rippledNode.js'
-import { startLedgerAdvanceLoop } from '../../devnet/ledgerAdvance.js'
+import { startRippledNode } from './rippledNode.js'
+import { startLedgerAdvanceLoop } from './ledgerAdvance.js'
 
 export interface LocalNetworkHandle {
   /** WebSocket URL of the running stand-alone node (dynamically-mapped host port). */
   wsUrl: string
+  rpcUrl: string
   /** Stops the ledger-advance interval, disconnects, and stops the container. */
   teardown: () => Promise<void>
 }
@@ -12,15 +13,14 @@ export interface LocalNetworkHandle {
  * Starts a fresh, disposable stand-alone rippled node in Docker, waits for
  * it to actually accept WebSocket RPC calls, and keeps its ledger
  * auto-advancing (stand-alone mode never closes ledgers on its own) for the
- * lifetime of the returned handle. Thin wrapper around the shared
- * `devnet/rippledNode.ts` and `devnet/ledgerAdvance.ts` helpers, which
- * `npm run devnet:up` also uses.
+ * lifetime of the returned handle. These SDK fixtures are test-only; operational
+ * scripts use Docker Compose and the Rust CLI closes its own ledgers.
  *
  * Intended for one call per test file's `beforeAll`, paired with
  * `handle.teardown()` in `afterAll`.
  */
 export async function startLocalNetwork(): Promise<LocalNetworkHandle> {
-  const { wsUrl, container } = await startRippledNode()
+  const { wsUrl, rpcUrl, container } = await startRippledNode()
   const ledgerAdvance = await startLedgerAdvanceLoop(wsUrl)
 
   const teardown = async (): Promise<void> => {
@@ -28,5 +28,5 @@ export async function startLocalNetwork(): Promise<LocalNetworkHandle> {
     await container.stop()
   }
 
-  return { wsUrl, teardown }
+  return { wsUrl, rpcUrl, teardown }
 }

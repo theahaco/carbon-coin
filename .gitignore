@@ -9,3 +9,8 @@ web/.astro/
 
 # Pinned, reproducibly built aha SDK (see prototype.json).
 .prototype/
+
+# Atomic deployment writes and operation lock.
+.deployment.json.tmp
+.deployment.json.lock/
+web/public/deployment.json.tmp

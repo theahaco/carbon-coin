@@ -4,54 +4,31 @@ import { GenericContainer, type StartedTestContainer } from 'testcontainers'
 import { Client } from 'xrpl'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const RIPPLED_CFG_PATH = path.resolve(__dirname, 'rippled.cfg')
+const RIPPLED_CFG_PATH = path.resolve(__dirname, '../../devnet/rippled.cfg')
 const WS_ADMIN_PORT = 6006
 
 export interface StartedRippledNode {
   /** WebSocket URL of the running stand-alone node. */
   wsUrl: string
+  rpcUrl: string
   /** The underlying testcontainers handle, for callers that need to stop it directly. */
   container: StartedTestContainer
 }
 
-export interface StartRippledNodeOptions {
-  /**
-   * Bind the node's WS admin port to a fixed host port (e.g. 6006, matching
-   * `network.ts`'s default local URL) instead of a dynamically-assigned one.
-   * Used by `npm run devnet:up` so scripts/tests can rely on the well-known
-   * `ws://localhost:6006` without needing to discover a port. Integration
-   * tests omit this to get a dynamically-mapped port, so each test file's
-   * disposable node can't collide with another file's, or with a real
-   * `devnet:up` node the developer left running.
-   */
-  hostPort?: number
-}
-
-/**
- * Starts a fresh, disposable stand-alone rippled node in Docker (via
- * `testcontainers`), and waits for it to actually accept WebSocket RPC
- * calls. Shared by the integration test helper (see
- * `test/helpers/localNetwork.ts`) and `devnet/cli.ts`, which were
- * previously two separate implementations of the same "start a stand-alone
- * rippled node" logic (one via `testcontainers`, one via a
- * docker-compose.yml file).
- */
-export async function startRippledNode(options: StartRippledNodeOptions = {}): Promise<StartedRippledNode> {
-  let container = new GenericContainer('rippleci/rippled:latest')
+/** Start an isolated node with dynamically mapped HTTP and WebSocket ports. */
+export async function startRippledNode(): Promise<StartedRippledNode> {
+  const container = new GenericContainer('rippleci/rippled:latest')
     .withPlatform('linux/amd64')
     .withCommand(['--standalone', '--start', '--conf', '/etc/opt/ripple/rippled.cfg'])
     .withBindMounts([{ source: RIPPLED_CFG_PATH, target: '/etc/opt/ripple/rippled.cfg', mode: 'ro' }])
     .withStartupTimeout(60_000)
-
-  container = options.hostPort
-    ? container.withExposedPorts({ container: WS_ADMIN_PORT, host: options.hostPort })
-    : container.withExposedPorts(WS_ADMIN_PORT)
+    .withExposedPorts(WS_ADMIN_PORT, 5005)
 
   const started = await container.start()
   const wsUrl = `ws://${started.getHost()}:${started.getMappedPort(WS_ADMIN_PORT)}`
   await waitUntilReady(wsUrl)
 
-  return { wsUrl, container: started }
+  return { wsUrl, rpcUrl: 'http://' + started.getHost() + ':' + started.getMappedPort(5005), container: started }
 }
 
 /**

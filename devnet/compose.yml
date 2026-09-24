@@ -1,0 +1,15 @@
+services:
+  rippled:
+    image: rippleci/rippled:latest
+    platform: linux/amd64
+    command: ["--standalone", "--start", "--conf", "/etc/opt/ripple/rippled.cfg"]
+    ports:
+      - "127.0.0.1:5005:5005"
+      - "127.0.0.1:6006:6006"
+    volumes:
+      - ./rippled.cfg:/etc/opt/ripple/rippled.cfg:ro
+    healthcheck:
+      test: ["CMD", "/opt/ripple/bin/rippled", "--conf", "/etc/opt/ripple/rippled.cfg", "server_info"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

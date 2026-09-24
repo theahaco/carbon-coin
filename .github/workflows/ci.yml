@@ -34,6 +34,7 @@ jobs:
         working-directory: web
 
       - run: npm run typecheck
+      - run: npm run cli:lint
 
       - run: npm run web:build
 
@@ -42,7 +43,7 @@ jobs:
   integration:
     name: Integration tests
     # ubuntu-latest is linux/amd64 (matching the rippled image platform pinned
-    # in devnet/rippledNode.ts) and ships with a working Docker daemon, which
+    # in test/helpers/rippledNode.ts) and ships with a working Docker daemon, which
     # testcontainers needs to spin up a stand-alone rippled node per test file.
     runs-on: ubuntu-latest
     # Each test file starts its own rippled container and the files run
@@ -61,8 +62,20 @@ jobs:
       - run: npm ci
 
       # Pull ahead of time so a slow image pull can't eat into the 60s
-      # container startup timeout in devnet/rippledNode.ts.
+      # container startup timeout in test/helpers/rippledNode.ts.
       - name: Pull rippled image
         run: docker pull --platform linux/amd64 rippleci/rippled:latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .prototype/xrpl-rust/target
+          key: cli-${{ runner.os }}-${{ hashFiles('cli.json', 'cli/Cargo.lock') }}
+
+      - run: npm run cli:setup
 
       - run: npm run test:integration

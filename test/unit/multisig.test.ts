@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Client, Wallet } from 'xrpl'
-import { localSigners, signerListFields } from '../../src/lib/multisig.js'
+import { localSigners, signerListFields } from '../helpers/sdk/multisig.js'
 
 const external = { address: 'rExternal', seed: '' }
 const firstWallet = Wallet.generate()

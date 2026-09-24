@@ -1,4 +1,4 @@
-// Mirrors the (non-secret) shape written by `src/scripts/sync-public-config.ts`.
+// Mirrors the (non-secret) shape written by `scripts/public-config.jq`.
 
 import { withBase } from './paths'
 

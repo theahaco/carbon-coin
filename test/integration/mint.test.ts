@@ -1,8 +1,8 @@
-import { localSigners } from '../../src/lib/multisig.js'
+import { localSigners } from '../helpers/sdk/multisig.js'
 import { encodeMemo, fetchMPTokenOrUndefined } from 'xrpl'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Wallet, TransactionFailedError } from 'xrpl'
-import { fundNewWallet } from '../../src/lib/fund.js'
+import { fundNewWallet } from '../helpers/sdk/fund.js'
 import { startLocalNetwork, type LocalNetworkHandle } from '../helpers/localNetwork.js'
 import { connectClient, setupGovernance, setupIssuer, testEnv } from '../helpers/fixtures.js'
 

@@ -8,21 +8,24 @@
     "node": ">=22"
   },
   "scripts": {
-    "devnet:up": "tsx devnet/cli.ts up",
-    "devnet:down": "tsx devnet/cli.ts down",
-    "setup:issuer": "tsx src/scripts/setup-issuer.ts",
-    "setup:governance": "tsx src/scripts/setup-governance.ts",
-    "mint": "tsx src/scripts/mint.ts",
-    "redistribute": "tsx src/scripts/redistribute.ts",
-    "status": "tsx src/scripts/status.ts",
-    "web:sync-config": "tsx src/scripts/sync-public-config.ts",
+    "devnet:up": "docker compose -p carbon-coin-devnet -f devnet/compose.yml up -d --wait",
+    "devnet:down": "docker compose -p carbon-coin-devnet -f devnet/compose.yml down",
+    "setup:issuer": "node scripts/run.mjs setup:issuer",
+    "setup:governance": "node scripts/run.mjs setup:governance",
+    "mint": "node scripts/run.mjs mint",
+    "redistribute": "node scripts/run.mjs redistribute",
+    "status": "node scripts/run.mjs status",
+    "web:sync-config": "node scripts/run.mjs web:sync-config",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:typecheck": "npm --prefix web run typecheck",
     "web:test": "npm --prefix web run test",
     "test:integration": "vitest run",
     "typecheck": "tsc --noEmit && npm run web:typecheck",
-    "prototype:setup": "node scripts/setup-prototype.mjs"
+    "prototype:setup": "node scripts/setup-prototype.mjs",
+    "deployment:import": "node scripts/run.mjs deployment:import",
+    "cli:setup": "node scripts/setup-cli.mjs",
+    "cli:lint": "shellcheck scripts/token.sh scripts/token-common.sh && bash -n scripts/token.sh scripts/token-common.sh"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
@@ -31,7 +34,6 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "testcontainers": "^10.16.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
