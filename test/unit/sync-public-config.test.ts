@@ -16,6 +16,8 @@ const tokenConfig: TokenMetadataConfig = {
 const state: DeploymentState = {
   network: 'testnet',
   mptIssuanceId: 'ABCDEF0123456789',
+  // RequireAuth | CanLock | CanTransfer | CanClawback
+  issuance: { flags: 102, assetScale: 3 },
   issuer: {
     address: 'rIssuerAddress',
     seed: 'sIssuerSeedSecret',
@@ -44,6 +46,8 @@ describe('sync-public-config', () => {
     expect(publicConfig).toEqual({
       network: 'testnet',
       mptIssuanceId: 'ABCDEF0123456789',
+      assetScale: 3,
+      flags: 102,
       token: {
         ticker: 'CRBN',
         name: 'Carbon Coin',
@@ -82,5 +86,23 @@ describe('sync-public-config', () => {
     expect(publicConfig.issuer).toBeUndefined()
     expect(publicConfig.governance).toBeUndefined()
     expect(publicConfig.mptIssuanceId).toBeUndefined()
+  })
+
+  it('publishes a whole-unit, open issuance as AssetScale 0 and its flags', () => {
+    const publicConfig = buildPublicConfig({ ...state, issuance: { flags: 98, assetScale: 0 } }, tokenConfig)
+    expect(publicConfig).toMatchObject({ assetScale: 0, flags: 98 })
+  })
+
+  it('never publishes the lock bit, which can change after the snapshot', () => {
+    // lsfMPTLocked (0x01) on top of RequireAuth | CanLock | CanTransfer | CanClawback
+    const publicConfig = buildPublicConfig({ ...state, issuance: { flags: 103, assetScale: 3 } }, tokenConfig)
+    expect(publicConfig.flags).toBe(102)
+  })
+
+  it('leaves assetScale and flags out for a state written before they were recorded', () => {
+    const { issuance: _omitted, ...olderState } = state
+    const serialized = JSON.stringify(buildPublicConfig(olderState, tokenConfig))
+    expect(serialized).not.toContain('"assetScale"')
+    expect(serialized).not.toContain('"flags"')
   })
 })

@@ -1,6 +1,7 @@
 import { isValidClassicAddress } from 'xrpl'
 import { connectClient } from '../lib/client.js'
 import { localSigners } from '../lib/multisig.js'
+import { describeLedgerAmount } from '../lib/mpt.js'
 import { loadDeploymentState, requireGovernance, requireMptIssuanceId } from '../lib/config.js'
 
 function parseArgs(argv: string[]): { destination: string; amount: string } {
@@ -10,7 +11,7 @@ function parseArgs(argv: string[]): { destination: string; amount: string } {
   }
   if (!amount || !/^\d+$/.test(amount)) {
     throw new Error(
-      'Usage: npm run redistribute -- <destinationAddress> <amount>\n  <amount> must be a whole non-negative integer.',
+      'Usage: npm run redistribute -- <destinationAddress> <amount>\n  <amount> must be a whole non-negative integer: the ledger value, in 10^-AssetScale units.',
     )
   }
   return { destination, amount }
@@ -26,7 +27,9 @@ async function main(): Promise<void> {
   const { client, network } = await connectClient()
   try {
     console.log(`Connected to ${network.name} (${network.wsUrl}).`)
-    console.log(`Sending ${amount} unit(s) from governance (${governance.address}) to ${destination}...`)
+    console.log(
+      `Sending ${describeLedgerAmount(amount, state.issuance?.assetScale)} from governance (${governance.address}) to ${destination}...`,
+    )
 
     const result = await client
       .forAccount(governance.address)

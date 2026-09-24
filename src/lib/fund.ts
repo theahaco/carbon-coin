@@ -1,4 +1,4 @@
-import { Client, Wallet, xrpToDrops, ECDSA } from 'xrpl'
+import { Client, Wallet, xrpToDrops, type ECDSA } from 'xrpl'
 import { STANDALONE_GENESIS_ACCOUNT, type NetworkConfig } from './network.js'
 import type { SignerWallet } from './config.js'
 
@@ -22,7 +22,13 @@ export async function fundNewWallet(client: Client, network: NetworkConfig): Pro
     // The genesis account's published address was derived with secp256k1;
     // xrpl.js defaults Wallet.fromSeed to ed25519, which yields a different
     // (wrong) address for this seed, so the algorithm must be explicit.
-    const genesis = Wallet.fromSeed(STANDALONE_GENESIS_ACCOUNT.secret, { algorithm: ECDSA.secp256k1 })
+    // `ECDSA` is imported as a type only: under Node 22, a named ESM import
+    // of the runtime enum from xrpl's CommonJS build fails to link (Node's
+    // CJS export detection skips it), which broke every script loading this
+    // file when run with tsx.
+    const genesis = Wallet.fromSeed(STANDALONE_GENESIS_ACCOUNT.secret, {
+      algorithm: 'ecdsa-secp256k1' as ECDSA,
+    })
     const signing = client.withWallet(genesis)
     await signing.tx
       .payment({

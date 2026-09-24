@@ -1,5 +1,6 @@
 import { connectClient } from '../lib/client.js'
 import { localSigners } from '../lib/multisig.js'
+import { describeLedgerAmount } from '../lib/mpt.js'
 import { encodeMemo } from 'xrpl'
 import {
   loadDeploymentState,
@@ -19,7 +20,7 @@ function parseArgs(argv: string[]): { amount: string; period: string; force: boo
 
   if (!amount || !/^\d+$/.test(amount)) {
     throw new Error(
-      'Usage: npm run mint -- <amount> [period] [--force]\n  <amount> must be a whole non-negative integer (no decimals -- AssetScale is omitted for this token).',
+      'Usage: npm run mint -- <amount> [period] [--force]\n  <amount> must be a whole non-negative integer: the ledger value, in 10^-AssetScale units (with AssetScale 3, 1000 is 1.000).',
     )
   }
   return { amount, period, force }
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
   try {
     console.log(`Connected to ${network.name} (${network.wsUrl}).`)
     console.log(
-      `Minting ${amount} unit(s) for period "${period}" to governance account ${governance.address}...`,
+      `Minting ${describeLedgerAmount(amount, state.issuance?.assetScale)} for period "${period}" to governance account ${governance.address}...`,
     )
 
     const result = await client

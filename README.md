@@ -1,9 +1,14 @@
 # xrpl-token
 
 A simple fungible token on the XRP Ledger, built on the native **MPToken**
-standard (not classic trust-line Issued Currencies). New supply is minted
-annually via a multisig-gated issuer account and sent to a multisig-gated
-governance account, which will later decide fund allocation.
+standard (not classic trust-line Issued Currencies). A multisig-gated issuer
+account mints new supply, one mint per labelled period, to a multisig-gated
+governance account, which passes units on to holders.
+
+The code doesn't fix a token identity. The name, ticker and issuer name come
+from the `TOKEN_*` env vars at issuance and reach the web frontend through
+`web/public/deployment.json`; the frontend's own copy and branding live under
+`web/`.
 
 
 ## Aha DevX prototype
@@ -30,20 +35,26 @@ records the findings that motivated this stack.
 
 - **Token standard**: XRPL native MPToken (`MPTokenIssuanceCreate` /
   `MPTokenAuthorize` / `Payment`).
-- **Supply**: open-ended (no `MaximumAmount`), whole units only (`AssetScale`
-  omitted) — no decimals, no floating-point conversion anywhere.
-- **Issuance flags**: transferable, lockable (freeze), clawback-able. Not
-  allow-listed (`tfMPTRequireAuth` is not set) — any account can hold the
-  token once it self-authorizes.
+- **Supply**: open-ended (no `MaximumAmount`). Ledger amounts are integers;
+  no floating-point conversion anywhere. `TOKEN_ASSET_SCALE` (default 0,
+  whole units only) sets the issuance's `AssetScale`: with 3, one displayed
+  unit is 1000 on the ledger, so amounts go down to 0.001.
+- **Issuance flags**: transferable, lockable (freeze), clawback-able.
+  `MPT_REQUIRE_AUTH` (default off) adds `tfMPTRequireAuth`. With it off, any
+  account can hold the token once it self-authorizes. With it on, the issuer
+  must also admit each holder (`MPTokenAuthorize` with `Holder`) before that
+  holder can receive units. Flags and `AssetScale` are fixed at issuance.
 - **Issuer account**: the MPT issuance itself is a single-sig bootstrap
   action, signed with the account's still-active throwaway master key. The
   account is then established as a 2-of-3 multisig and its master key is
-  disabled immediately after — so from that point on, the annual mint,
-  lock/unlock, and clawback are all provably multisig-only actions.
+  disabled, so from that point on minting, admission, lock/unlock and
+  clawback are all multisig-only actions. With RequireAuth, the master key
+  is disabled one step later (see [RequireAuth setup order](#requireauth-setup-order)).
 - **Governance account** likewise self-authorizes to hold the MPT as a
   single-sig bootstrap action before its master key is disabled; from then
-  on it's a 2-of-3 multisig, independent of whatever real-world governance
-  process eventually decides where funds go.
+  on it's a 2-of-3 multisig with its own signer list. Keeping that list
+  separate from the issuer's is a matter of configuration: nothing checks
+  that the two lists don't share a signer.
 - Both 2-of-3 signer sets are **placeholders** for local/Testnet development
   — replace them with real keys before any production use.
 
@@ -72,6 +83,14 @@ cp .env.example .env
 
 Edit `.env` to set your token's identity (`TOKEN_TICKER`, `TOKEN_NAME`,
 etc.) and to select a network via `XRPL_NETWORK` (`local` or `testnet`).
+
+Two optional settings shape the issuance. They're read once, by
+`setup:issuer`, and can't be changed afterwards without a new issuance:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MPT_REQUIRE_AUTH` | `false` | `true` sets `tfMPTRequireAuth`: holders need the issuer's admission before they can receive units. Also changes the [setup order](#requireauth-setup-order). |
+| `TOKEN_ASSET_SCALE` | `0` | The issuance's `AssetScale`, a whole number from 0 to 18. One displayed unit is 10^scale on the ledger. |
 
 ## Networks
 
@@ -121,13 +140,50 @@ npm run setup:issuer                    # funds + configures the issuer, creates
 npm run setup:governance                # funds + configures governance, authorizes it to hold the MPT
 npm run mint -- <amount> [period]       # multisig-signed mint to governance (period defaults to the current year)
 npm run redistribute -- <address> <amount>  # multisig-signed Payment from governance to a recipient
-npm run status                          # prints issuance, balances, and signer list configuration
+npm run status                          # prints issuance, balances, admission and signer list configuration
 ```
 
-All state (generated addresses, signer seeds, the MPT issuance ID, and a
-record of which periods have already been minted) is persisted to
+`<amount>` is the ledger value: with `TOKEN_ASSET_SCALE=3`, `1000` is 1.000
+displayed units.
+
+All state (generated addresses, signer seeds, the MPT issuance ID, the
+issuance's flags and `AssetScale` as read back from the ledger, and a record
+of which periods have already been minted) is persisted to
 `.deployment.json`, which is gitignored. Delete it (or specific fields
-within it) to redo a step from scratch.
+within it) to redo a step from scratch. Redoing the issuer means a new
+issuance, so delete the `governance` field along with `issuer`,
+`mptIssuanceId` and `issuance`: `setup:issuer` refuses to start while a
+governance account from an earlier issuance is recorded.
+
+Both setup scripts save progress after funding their accounts, and
+`setup:issuer` also saves once it has created the issuance. Each step checks
+the ledger before it acts. If a run stops half-way, run the same command
+again to resume it.
+
+### RequireAuth setup order
+
+With `MPT_REQUIRE_AUTH=true`, the governance account can't receive its first
+mint until the issuer admits it, and the issuer can only sign alone while its
+master key is enabled. So the setup keeps that key until the admission is
+done:
+
+1. `setup:issuer` funds the issuer, creates the issuance single-sig, and sets
+   the issuer's 2-of-3 signer list. It **leaves the issuer's master key
+   enabled** and records `"masterKeyDisablePending": true` for the issuer in
+   `.deployment.json`.
+2. `setup:governance` funds the governance account, which self-authorizes
+   single-sig. The issuer's master key then admits it (`MPTokenAuthorize`
+   with `Holder` and a bootstrap memo) and is disabled. Last, the governance
+   2-of-3 signer list is set and the governance master key is disabled.
+
+Run the two steps back to back: until step 2 finishes, the issuer's master
+key can still sign alone. `npm run status` shows RequireAuth and
+`AssetScale`, whether the governance account is admitted, and whether both
+master keys are disabled. Every holder admitted after setup needs an issuer
+multisig `MPTokenAuthorize` with `Holder`.
+
+With `MPT_REQUIRE_AUTH` unset or `false`, the order and transactions are the
+same as before: each script disables its own account's master key.
 
 `mint` refuses to mint twice for the same period unless you pass `--force`,
 as a safety net against accidental double-issuance:
@@ -150,6 +206,19 @@ exercises real transactions against it — no mocking of XRPL behavior. It
 covers:
 
 - MPT issuance creation (flags, whole-unit scale, no supply cap, metadata)
+- A RequireAuth issuance with `AssetScale` 3: the bootstrap admission of the
+  governance account before both master keys are disabled; holders that
+  self-authorized but aren't admitted can't receive; issuer multisig
+  admission with a memo; per-holder lock and unlock with reason memos; and a
+  lost-key replacement (clawback from a locked holder, then re-issue to a new
+  admitted wallet, with a shared memo)
+- The setup scripts themselves, run as separate processes: the RequireAuth
+  setup order, reruns that change nothing, resuming an interrupted issuer
+  setup and a `setup:governance` run stopped after the admission, the error
+  when the issuer's master key is disabled before the admission, refusing a
+  governance account left from an earlier issuance, the unchanged order with
+  RequireAuth off, and a rerun on a state file written before `issuance`
+  was recorded
 - Multisig-gated minting, including insufficient-signature, disabled-master-
   key, and unauthorized-destination failure cases
 - Governance setup and multisig redistribution
@@ -166,7 +235,7 @@ npm run typecheck
 multisig members run real, [GhostSig](https://ghostsig.dev)-signed minting
 and redistribution ceremonies directly from a browser — no server, no
 seeds held anywhere. General visitors can connect, self-authorize, view live
-stats, and send Gton they already hold.
+stats, and send units they already hold.
 
 GhostSig only understands XRPL `testnet`/`devnet`/`mainnet`, so the web demo
 always targets **XRPL Testnet**, regardless of the CLI's `XRPL_NETWORK`
@@ -183,8 +252,9 @@ npm run web:dev           # or web:build / web:typecheck
 ```
 
 `web/public/deployment.json` is a committed, regenerate-on-demand static
-asset containing only non-secret fields (addresses, quorum, token identity)
-— `sync-public-config.ts` refuses to write anything containing a `seed` key.
+asset containing only non-secret fields (addresses, quorum, token identity,
+and the issuance's `assetScale` and `flags`) — `sync-public-config.ts`
+refuses to write anything containing a `seed` key.
 See `web/src/lib/ghostsig.ts` for the vendored GHOSTSIG popup protocol client
 (adapted from `ghostsig/sdk/popup.ts`) that the site signs everything through.
 
@@ -199,7 +269,10 @@ See `web/src/lib/ghostsig.ts` for the vendored GHOSTSIG popup protocol client
   that account becomes permanently locked out of its own powers/funds.
 - Freeze and clawback are powerful, centralized controls, included
   deliberately for this token. Document them clearly for any future holders
-  or auditors.
+  or auditors. A per-holder lock stops transfers between holders, but the
+  locked holder can still send units back to the issuer.
+- With RequireAuth, the issuer's master key stays enabled between
+  `setup:issuer` and `setup:governance`. Don't leave a setup in that state.
 - `SignerListSet` replaces an account's entire signer list; there's no
   incremental add/remove. Rotating signers requires meeting the *current*
   quorum to authorize the replacement list.

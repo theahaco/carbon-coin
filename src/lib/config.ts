@@ -14,12 +14,27 @@ export interface SignerWallet {
 export interface AccountState {
   address: string
   /** Master seed. Kept for local reference only; the master key is disabled
-   * immediately after the SignerList is configured, so this seed cannot sign
+   * once the account's bootstrap steps are done, so this seed cannot sign
    * anything for the account going forward (mint/lock/clawback/etc. all
    * require the signer quorum below). */
   seed: string
   signers: SignerWallet[]
   quorum: number
+  /** True while the master key is still enabled on purpose because setup
+   * isn't finished. With RequireAuth, the issuer keeps it until
+   * `setup:governance` has admitted the governance account. Absent in state
+   * files written before this field existed, which means "disabled". */
+  masterKeyDisablePending?: boolean
+}
+
+/** Issuance settings read back from the ledger after MPTokenIssuanceCreate. */
+export interface IssuanceState {
+  /** The MPTokenIssuance `Flags` (lsfMPT* bits) when read. All are fixed at
+   * creation except lsfMPTLocked, which the issuer multisig can change, so
+   * that bit is only a snapshot. */
+  flags: number
+  /** The MPTokenIssuance `AssetScale` (0 when the field is absent). */
+  assetScale: number
 }
 
 export interface DeploymentState {
@@ -27,6 +42,7 @@ export interface DeploymentState {
   issuer?: AccountState
   governance?: AccountState
   mptIssuanceId?: string
+  issuance?: IssuanceState
   /** Issuance periods (e.g. years) that have already been minted, to guard
    * against accidental double-minting. */
   mintedPeriods?: string[]

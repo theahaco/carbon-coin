@@ -23,6 +23,14 @@ export interface PublicTokenConfig {
 export interface PublicDeploymentConfig {
   network: string
   mptIssuanceId?: string
+  /** The issuance's AssetScale. Absent in configs written before it was published. */
+  assetScale?: number
+  /**
+   * The issuance's lsfMPT* flags that are fixed at creation (parse with
+   * parseMPTokenIssuanceFlags). lsfMPTLocked is always cleared here: read the
+   * lock state from the ledger. Absent in older configs.
+   */
+  flags?: number
   token: PublicTokenConfig
   issuer?: PublicAccountConfig
   governance?: PublicAccountConfig
