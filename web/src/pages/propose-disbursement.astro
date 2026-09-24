@@ -56,7 +56,7 @@ import Layout from '../layouts/Layout.astro'
 
 <script>
   import { isValidClassicAddress } from 'xrpl'
-  import { loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
+  import { configRequiresAuth, loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
   import { buildProposalPaymentTx } from '../lib/tx'
   import { signCeremonyPayload } from '../lib/ceremony'
@@ -64,15 +64,20 @@ import Layout from '../layouts/Layout.astro'
   import {
     checkTransfer,
     getIssuanceState,
+    getIssuanceTransactions,
     getMptHolding,
+    getMptHoldings,
     getOutgoingMptPayments,
+    getPendingRequests,
     mintPeriodOf,
     watchProposal,
+    type MptHolding,
     type MptPayment,
   } from '../lib/xrplClient'
+  import { admissionsOf, investorPicks, listedAccounts, type Admission, type AdmissionRequest } from '../lib/admission'
   import { currentDealingDay, formatDealingDay, parseDealingMonth } from '../lib/dealing'
   import { orderRefOf } from '../lib/ledger'
-  import { esc, formatShortDate, shortAddress } from '../lib/format'
+  import { esc, shortAddress } from '../lib/format'
   import { seatOn, seatsOf, signerRole } from '../lib/role'
   import { formatUnits, parseUnits } from '../lib/units'
   import { nonSignerHtml, problemPanelHtml, readinessHtml, renderHandoff, sentenceHtml } from '../lib/ui'
@@ -103,9 +108,19 @@ import Layout from '../layouts/Layout.astro'
     const mptIssuanceId = requireMptIssuanceId(config)
     const ticker = config.token.ticker
     const seats = seatsOf(config, 'desk')
+    /** Accounts never listed as investors. */
+    const exclude = [issuer.address, governance.address]
 
     let deliveries: MptPayment[] = []
+    let admissions: Admission[] = []
+    /** Accounts awaiting admission, which the Desk can't deliver to yet. */
+    let awaiting: AdmissionRequest[] = []
+    /** The listed accounts' holdings as last read, so the list shows where each stands now (a stop-transfer, say). */
+    let holdings = new Map<string, MptHolding>()
     let dealingDay = currentDealingDay()
+    /** Whether the issuance requires admission: the ledger's flags, else the published ones. Set before the first check. */
+    let requireAuth = configRequiresAuth(config) ?? false
+    const issuanceRead = getIssuanceState(mptIssuanceId)
 
     async function refreshInventory() {
       try {
@@ -124,20 +139,15 @@ import Layout from '../layouts/Layout.astro'
       return `${prefix}${String(used + 1).padStart(3, '0')}`
     }
 
+    /** Accounts on the register (or, on an open issuance, past delivery destinations), then those awaiting admission. */
     function renderPicks() {
-      const seen = new Set<string>()
-      const known = deliveries.filter((p) => {
-        if (p.destination === issuer.address || seen.has(p.destination)) return false
-        seen.add(p.destination)
-        return true
-      })
+      const known = investorPicks({ deliveries, admissions, pending: awaiting, exclude, requireAuth, holdings })
       $('picks').innerHTML = known
-        .slice(0, 5)
         .map(
-          (p) => `<label class="pick">
-            <input type="radio" name="investor" value="${esc(p.destination)}" />
-            <span class="pick-main"><span class="radio" aria-hidden="true"></span><span class="pick-addr" title="${esc(p.destination)}">${esc(shortAddress(p.destination))}</span></span>
-            <span class="pick-status">${p.date ? `Last delivery ${esc(formatShortDate(p.date))}` : 'Delivered before'}</span>
+          (pick) => `<label class="pick">
+            <input type="radio" name="investor" value="${esc(pick.address)}" />
+            <span class="pick-main"><span class="radio" aria-hidden="true"></span><span class="pick-addr" title="${esc(pick.address)}">${esc(shortAddress(pick.address))}</span></span>
+            <span class="pick-status${pick.stopped ? ' is-stopped' : ''}">${esc(pick.status)}</span>
           </label>`,
         )
         .join('')
@@ -185,6 +195,7 @@ import Layout from '../layouts/Layout.astro'
         const notice = await checkTransfer(governance.address, destination, mptIssuanceId, {
           source: 'The Dealing Desk',
           amount: typedAmount(),
+          requireAuth,
         })
         if (seq !== checkSeq) return
         if (notice) {
@@ -332,8 +343,9 @@ import Layout from '../layouts/Layout.astro'
     })
 
     // A locked issuance means dealing is suspended: say so and don't propose. A failed read leaves it to the ledger.
-    getIssuanceState(mptIssuanceId).then(
+    issuanceRead.then(
       (state) => {
+        requireAuth = Boolean(state.flags.lsfMPTRequireAuth)
         suspended = Boolean(state.flags.lsfMPTLocked)
         $('suspended').hidden = !suspended
         setBlocked(destinationBlocked)
@@ -343,10 +355,17 @@ import Layout from '../layouts/Layout.astro'
 
     refInput.value = suggestOrderRef()
     await refreshInventory()
-    const [issues, desk] = await Promise.allSettled([
+    const [issues, desk, registerHistory] = await Promise.allSettled([
       getOutgoingMptPayments(issuer.address, mptIssuanceId),
       getOutgoingMptPayments(governance.address, mptIssuanceId),
+      // Admissions and admission requests, both filed in the issuer's history.
+      getIssuanceTransactions(issuer.address, mptIssuanceId),
     ])
+    await issuanceRead.catch(() => undefined)
+    if (registerHistory.status === 'fulfilled' && requireAuth) {
+      admissions = admissionsOf(registerHistory.value, issuer.address)
+      awaiting = await getPendingRequests(registerHistory.value, issuer.address, mptIssuanceId, [governance.address], 3).catch(() => [])
+    }
     if (issues.status === 'fulfilled') {
       const days = issues.value
         .map((p) => parseDealingMonth(mintPeriodOf(p.memos) ?? ''))
@@ -361,8 +380,9 @@ import Layout from '../layouts/Layout.astro'
     }
     if (desk.status === 'fulfilled') {
       deliveries = [...desk.value].sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0))
-      renderPicks()
     }
+    holdings = await getMptHoldings(listedAccounts({ deliveries, admissions, exclude, requireAuth }), mptIssuanceId)
+    renderPicks()
     if (!refInput.value || refInput.value === `ORD-${currentDealingDay()}-001`) refInput.value = suggestOrderRef()
   }
 

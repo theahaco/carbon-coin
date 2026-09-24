@@ -26,3 +26,17 @@ export async function buildProposalPaymentTx(
     .prepareMultisig({ signersCount, expiry: 'none' })
   return { ...proposal.toJSON() }
 }
+
+/**
+ * The Register's admission of `holder` under RequireAuth: the issuer's
+ * MPTokenAuthorize naming the account as Holder, with its KYC memo.
+ * Prepared once for GhostSig, exactly like a payment proposal.
+ */
+export async function buildAdmissionTx(issuerAddress: string, holder: string, mptIssuanceId: string, signersCount: number, memo: TextMemo) {
+  const client = await getClient()
+  const proposal = await client
+    .forAccount(issuerAddress)
+    .tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId, Holder: holder, Memos: [encodeMemo(memo)] })
+    .prepareMultisig({ signersCount, expiry: 'none' })
+  return { ...proposal.toJSON() }
+}

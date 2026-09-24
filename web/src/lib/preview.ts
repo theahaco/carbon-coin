@@ -1,5 +1,6 @@
 import { decodeMemo, type Memo } from 'xrpl'
 import { brand, type KeySet } from '../brand'
+import { kycReferenceOf } from './admission'
 import { contractNote, noteShortForm, type ContractNote } from './dealing'
 import { shortAddress } from './format'
 import { orderRefOf } from './ledger'
@@ -19,10 +20,14 @@ import { formatAmountExact, formatUnits } from './units'
  *   investor, carrying the order reference.
  * - return: a Dealing Desk Payment back to the Register, which cancels the
  *   units (the redemption leg).
+ * - admit: a Register MPTokenAuthorize naming a holder, which admits that
+ *   account to the register (RequireAuth). Flagged OFF-PROCEDURE when its
+ *   memo carries no Dealing Desk KYC reference.
  * - unrecognised: any other transaction type, source account, asset or
- *   malformed amount. The sign button is hidden for these.
+ *   malformed amount, or a revocation (tfMPTUnauthorize). The sign button
+ *   is hidden for these.
  */
-export type ProposalKind = 'issue' | 'deliver' | 'return' | 'unrecognised'
+export type ProposalKind = 'issue' | 'deliver' | 'return' | 'admit' | 'unrecognised'
 
 export interface ProposalContext {
   ticker: string
@@ -37,8 +42,10 @@ export interface ProposalPreview {
   kind: ProposalKind
   /** Which key set must sign. Undefined for unrecognised proposals. */
   keySet?: KeySet
-  /** "Issue 235,187.958 HQUAY to the Dealing Desk for dealing day 2026-10 (€2,450,000 ÷ NAV €10.4172)", "Deliver 25,000.000 HQUAY to rAb7Tq…Q7Kx · order ORD-2026-10-014" */
+  /** "Issue 235,187.958 HQUAY to the Dealing Desk for dealing day 2026-10 (€2,450,000 ÷ NAV €10.4172)", "Deliver 25,000.000 HQUAY to rAb7Tq…Q7Kx · order ORD-2026-10-014", "Admit rHn4Vb…m2Pc to the register" */
   sentence: string
+  /** The relay message, when it says more than `sentence` (an admission names the KYC reliance). */
+  relay?: string
   /** The past-tense result line, once quorum is met. */
   doneSentence: string
   /** Completes "The transaction is valid, but {reason} Check with the proposer before you sign." */
@@ -49,6 +56,10 @@ export interface ProposalPreview {
   orderRef?: string
   account: string
   destination?: string
+  /** The account an admission puts on the register. */
+  holder?: string
+  /** The Dealing Desk KYC reference an admission's memo carries. */
+  kycRef?: string
   amountRaw?: string
   /** Every top-level field, for the record. */
   rawFields: Array<[string, string]>
@@ -58,6 +69,44 @@ export const OFF_PROCEDURE_SKIPS_DESK =
   'the units go straight to an investor and skip the Dealing Desk. Register issues normally go only to the Desk.'
 
 export const FINER_THAN_UNITS = 'its amount has more than 3 decimals, and units are only ever dealt in thousandths.'
+
+export const OFF_PROCEDURE_NO_KYC = 'the memo carries no Dealing Desk KYC reference.'
+
+/** `tfMPTUnauthorize` on MPTokenAuthorize: from the issuer, it revokes an admission. */
+const TF_MPT_UNAUTHORIZE = 0x00000001
+
+function revokes(flags: unknown): boolean {
+  if (typeof flags === 'number') return (flags & TF_MPT_UNAUTHORIZE) !== 0
+  return typeof flags === 'object' && flags !== null && Boolean((flags as { tfMPTUnauthorize?: unknown }).tfMPTUnauthorize)
+}
+
+/**
+ * A Register admission: the issuer's MPTokenAuthorize for this issuance,
+ * naming the account it admits as `Holder`. Anything else of that type
+ * (another account, issuance or a revocation) is unrecognised.
+ */
+function describeAdmission(tx: Record<string, unknown>, ctx: ProposalContext): ProposalPreview {
+  const account = typeof tx.Account === 'string' ? tx.Account : ''
+  const holder = typeof tx.Holder === 'string' ? tx.Holder : ''
+  if (!ctx.issuer || account !== ctx.issuer) return unrecognised(tx)
+  if (!ctx.mptIssuanceId || tx.MPTokenIssuanceID !== ctx.mptIssuanceId) return unrecognised(tx)
+  if (!holder || holder === account || revokes(tx.Flags)) return unrecognised(tx)
+  const base = { kind: 'admit' as const, keySet: 'register' as const, account, holder, rawFields: rawFieldsOf(tx) }
+  // The Dealing Desk is admitted once, at setup; it isn't an investor, so no KYC reference is expected.
+  if (holder === ctx.desk) {
+    return { ...base, sentence: 'Admit the Dealing Desk to the register', doneSentence: 'The Dealing Desk admitted to the register.' }
+  }
+  const who = shortAddress(holder)
+  const kycRef = kycReferenceOf(textMemos(tx))
+  return {
+    ...base,
+    kycRef,
+    sentence: `Admit ${who} to the register`,
+    relay: kycRef ? `Admit ${who} to the register (KYC by the Dealing Desk, reliance agreement)` : undefined,
+    doneSentence: `${who} admitted to the register.`,
+    offProcedure: kycRef ? undefined : OFF_PROCEDURE_NO_KYC,
+  }
+}
 
 /** Completes "The transaction is valid, but {reason} Check with the proposer before you sign." */
 function coSignReason(deviation: IssueDeviation, ticker: string): string {
@@ -122,6 +171,7 @@ export function describeProposal(tx: Record<string, unknown>, ctx: ProposalConte
   const fromRegister = Boolean(ctx.issuer) && account === ctx.issuer
   const fromDesk = Boolean(ctx.desk) && account === ctx.desk
 
+  if (tx.TransactionType === 'MPTokenAuthorize') return describeAdmission(tx, ctx)
   if (tx.TransactionType !== 'Payment' || (!fromRegister && !fromDesk)) return unrecognised(tx)
   if (typeof amount !== 'object' || amount === null || typeof amount.value !== 'string' || !/^[1-9]\d*$/.test(amount.value)) {
     return unrecognised(tx)

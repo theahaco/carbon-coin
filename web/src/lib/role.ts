@@ -1,16 +1,20 @@
 import { brand, seatName, type KeySet } from '../brand'
 import type { PublicAccountConfig, PublicDeploymentConfig } from './config'
+import type { MptHolding } from './xrplClient'
 
 /**
  * Roles in the demo. Register and Dealing Desk come from the published
  * signer lists (the Register is the issuer account's list, the Dealing Desk
- * the governance account's). Everyone else connected is an investor, and
- * `locked` is an investor whose holding carries the MPToken lock flag.
+ * the governance account's). Everyone else connected is an investor:
+ * `pending` while the issuance requires admission and the Register hasn't
+ * admitted the account yet, `locked` when the holding carries the MPToken
+ * lock flag. The header shows all three as "Investor".
  */
-export type RoleKind = 'visitor' | 'investor' | 'locked' | 'register' | 'desk'
+export type RoleKind = 'visitor' | 'pending' | 'investor' | 'locked' | 'register' | 'desk'
 
 export const ROLE_LABEL: Record<RoleKind, string> = {
   visitor: 'Visitor',
+  pending: 'Investor',
   investor: 'Investor',
   locked: 'Investor',
   register: brand.keySets.register.label,
@@ -19,10 +23,22 @@ export const ROLE_LABEL: Record<RoleKind, string> = {
 
 export const ROLE_WITH_ARTICLE: Record<RoleKind, string> = {
   visitor: 'a visitor',
+  pending: 'an investor',
   investor: 'an investor',
   locked: 'an investor',
   register: brand.keySets.register.role,
   desk: brand.keySets.desk.role,
+}
+
+/**
+ * The role of a connected account that holds no key, from its holding.
+ * Under RequireAuth an account is `pending` until the Register admits it
+ * (`lsfMPTAuthorized`), whether or not it has asked yet; on an open
+ * issuance any account is an investor.
+ */
+export function holderRole(holding: Pick<MptHolding, 'hasHolding' | 'admitted' | 'locked'>, requireAuth: boolean): 'pending' | 'investor' | 'locked' {
+  if (requireAuth && !(holding.hasHolding && holding.admitted)) return 'pending'
+  return holding.locked ? 'locked' : 'investor'
 }
 
 export interface Seat {

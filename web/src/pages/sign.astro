@@ -89,11 +89,13 @@ import Layout from '../layouts/Layout.astro'
 
 <script>
   import { decode } from 'xrpl'
-  import { loadPublicConfig, requireMptIssuanceId } from '../lib/config'
+  import { configRequiresAuth, loadPublicConfig, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange } from '../lib/connect'
   import { signCeremonyPayload } from '../lib/ceremony'
   import { describeProposal, type ProposalPreview } from '../lib/preview'
-  import { checkTransfer, getMintHistory, watchProposal, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
+  import { checkTransfer, getMintHistory, getMptHolding, getRequireAuth, watchProposal, TESTNET_EXPLORER_BASE } from '../lib/xrplClient'
+  import { admissionNotice, admissionState, KYC_RELIANCE } from '../lib/admission'
+  import { ADMISSION_RESULT_MEANING, type ProblemOptions } from '../lib/outcome'
   import { alreadyIssued } from '../lib/procedure'
   import { formatUnits } from '../lib/units'
   import { urlParamToBlob } from '../lib/blob'
@@ -139,6 +141,8 @@ import Layout from '../layouts/Layout.astro'
   async function main() {
     const config = await loadPublicConfig()
     const mptIssuanceId = requireMptIssuanceId(config)
+    /** Whether the issuance requires admission: the ledger's flags, else the published ones. */
+    const requireAuthRead = getRequireAuth(mptIssuanceId, configRequiresAuth(config))
     const ctx = {
       ticker: config.token.ticker,
       mptIssuanceId,
@@ -190,7 +194,15 @@ import Layout from '../layouts/Layout.astro'
       const destination = preview.destination ?? ''
       const destinationName =
         destination === ctx.desk ? ' (the Dealing Desk)' : destination === ctx.issuer ? ' (the Register)' : ''
-      $('destination-line').innerHTML = destination ? `To <span class="address">${esc(destination)}</span>${esc(destinationName)}` : ''
+      if (preview.kind === 'admit' && preview.holder) {
+        // The full address the admission names, and the KYC reference its memo carries.
+        const holderName = preview.holder === ctx.desk ? ' (the Dealing Desk)' : ''
+        $('destination-line').innerHTML = `Account <span class="address">${esc(preview.holder)}</span>${esc(holderName)}${
+          preview.kycRef ? `<br>Memo <span class="mono">${esc(`${preview.kycRef} · ${KYC_RELIANCE}`)}</span>` : ''
+        }`
+      } else {
+        $('destination-line').innerHTML = destination ? `To <span class="address">${esc(destination)}</span>${esc(destinationName)}` : ''
+      }
       $('note').innerHTML = preview.note ? contractNoteHtml(preview.note, ctx.ticker, { compact: true }) : ''
 
       $('seat-chips').innerHTML = chipsHtml(seatsOf(config, keySet), { signed, you: address, emphasiseYou: false })
@@ -220,13 +232,39 @@ import Layout from '../layouts/Layout.astro'
       show('preview')
     }
 
+    /**
+     * The co-signer's own check on an admission: GhostSig submits at quorum
+     * without a preflight, so an admission the ledger would reject (no
+     * request yet, or no RequireAuth) still spends its fee. Advisory, like
+     * the transfer check: signing stays possible.
+     */
+    function checkAdmission(proposal: ProposalPreview) {
+      const warning = $('destination-warning')
+      const holder = proposal.holder
+      if (!holder) return
+      Promise.all([getMptHolding(holder, mptIssuanceId), requireAuthRead])
+        .then(([holding, requireAuth]) => {
+          const notice = admissionNotice(admissionState(holding, requireAuth), holder, ctx.ticker)
+          if (notice) warning.innerHTML = readinessHtml(notice)
+        })
+        .catch(() => {
+          warning.innerHTML = '<div class="status">Could not check the account. Try again before signing.</div>'
+        })
+    }
+
     function checkDestination(proposal: ProposalPreview) {
       const warning = $('destination-warning')
       warning.innerHTML = ''
+      if (proposal.kind === 'admit') {
+        checkAdmission(proposal)
+        return
+      }
       // Units returned to the Register are cancelled; the issuer never holds an MPToken, so skip the check.
       if (proposal.kind === 'unrecognised' || !proposal.destination || proposal.destination === ctx.issuer) return
       const source = proposal.account === ctx.desk ? 'The Dealing Desk' : 'The sending account'
-      checkTransfer(proposal.account, proposal.destination, mptIssuanceId, { source, amount: proposal.amountRaw })
+      const destination = proposal.destination
+      requireAuthRead
+        .then((requireAuth) => checkTransfer(proposal.account, destination, mptIssuanceId, { source, amount: proposal.amountRaw, requireAuth }))
         .then((notice) => {
           if (notice) warning.innerHTML = readinessHtml(notice)
         })
@@ -292,10 +330,13 @@ import Layout from '../layouts/Layout.astro'
     /** Failed on the ledger, superseded or unreadable: an alert panel, never the success panel or the past-tense line. */
     function showNotCompleted(proposal: ProposalPreview, status: ProblemStatus) {
       settled = true
+      const opts: ProblemOptions =
+        proposal.kind === 'admit' ? { effect: 'Nothing changed on the register.', meanings: ADMISSION_RESULT_MEANING } : {}
       $('not-completed').innerHTML = problemPanelHtml(
         status,
         proposal.sentence,
         `<a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>`,
+        opts,
       )
       show('not-completed')
     }
@@ -339,7 +380,7 @@ import Layout from '../layouts/Layout.astro'
           seats: seatsOf(config, keySet),
           signed,
           quorum,
-          relay: proposal.sentence,
+          relay: proposal.relay ?? proposal.sentence,
           shareUrl: outcome.shareUrl,
         })
         watch(proposal, quorum)

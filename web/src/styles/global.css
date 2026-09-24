@@ -164,7 +164,8 @@ p {
   background: var(--role-visitor);
 }
 
-.role-dot[data-role='investor'] {
+.role-dot[data-role='investor'],
+.role-dot[data-role='pending'] {
   background: var(--brand-ink);
 }
 
@@ -768,6 +769,49 @@ textarea.input {
   font: 400 13px var(--font-sans);
   color: var(--brand-muted);
   text-align: right;
+}
+
+/* A holding under a stop-transfer: the alert colour, as on the locked role. */
+.pick .pick-status.is-stopped {
+  color: var(--brand-alert);
+  font-weight: 500;
+}
+
+/* ---------- Admission request ---------- */
+
+.card-subtitle {
+  font: 500 18px/1.25 var(--font-serif);
+}
+
+.request-address {
+  font-size: 15px;
+}
+
+.checklist {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px dashed var(--brand-dashed);
+  cursor: pointer;
+}
+
+.checklist input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--brand-accent);
+  flex-shrink: 0;
+}
+
+.checklist-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.checklist-title {
+  font-weight: 500;
 }
 
 /* ---------- Status messages (errors and notices) ---------- */

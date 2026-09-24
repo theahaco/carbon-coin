@@ -21,7 +21,8 @@ describe('ledger reads', () => {
     const request = vi.spyOn(Client.prototype, 'request')
     request.mockRejectedValueOnce(new RippledError('Not found', { error: 'entryNotFound' }))
     expect(await getMptHolding('rHolder', 'issuance')).toEqual({
-      authorized: false,
+      hasHolding: false,
+      admitted: false,
       balanceRaw: '0',
       locked: false,
     })

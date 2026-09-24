@@ -1,0 +1,351 @@
+---
+import Layout from '../layouts/Layout.astro'
+---
+
+<Layout title="Admit investor" active="admit">
+  <div class="page-head">
+    <span class="eyebrow register">Register keys</span>
+    <h1 class="h1-inner">Admit investor</h1>
+    <p class="body-2">Put a requesting account on the register so the Dealing Desk can deliver units to it.</p>
+  </div>
+
+  <div id="page-error" class="status error" role="alert"></div>
+
+  <section id="non-signer" class="card" hidden></section>
+
+  <form id="admit-form" class="stack" novalidate hidden>
+    <div id="not-required" class="panel panel-alert" hidden>
+      <span class="panel-label">No admission on this issuance</span>
+      <span>This issuance doesn't set RequireAuth, so any wallet can hold units and the ledger would reject an admission.</span>
+    </div>
+
+    <fieldset class="field" style="border:0;margin:0;padding:0" id="account-field">
+      <legend class="field-label" style="padding:0;margin-bottom:6px">Requesting account</legend>
+      <div class="picks" id="picks"></div>
+      <label for="account-input" class="small-muted sr-only" id="account-label" style="margin-top:4px">Requesting account address</label>
+      <input id="account-input" class="input mono" name="account" placeholder="r…" autocomplete="off" spellcheck="false" />
+      <span class="small-muted" id="picks-note">Reading admission requests from the ledger…</span>
+    </fieldset>
+
+    <div id="account-warning"></div>
+
+    <div class="card" id="request-card" style="gap:14px" hidden>
+      <div class="split" style="align-items:baseline">
+        <span class="card-subtitle">Admission request</span>
+        <span class="small-muted" id="request-received"></span>
+      </div>
+      <div class="stack-tight" style="gap:4px">
+        <span class="label">Requesting account</span>
+        <span class="address request-address" id="request-address"></span>
+      </div>
+      <label class="checklist">
+        <input type="checkbox" id="kyc-check" />
+        <span class="checklist-text">
+          <span class="checklist-title">KYC completed by the Dealing Desk (off-ledger, reliance agreement)</span>
+          <span class="small-muted">Placeholder. The check itself happens off-ledger.</span>
+        </span>
+      </label>
+      <div class="field">
+        <label for="ref-input">KYC reference (memo)</label>
+        <input id="ref-input" class="input mono" name="ref" maxlength="48" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
+
+    <div><button id="admit-button" type="submit" class="btn btn-primary btn-lg" disabled>Sign admission with passkey</button></div>
+  </form>
+
+  <section id="handoff" hidden></section>
+
+  <section id="admitted" class="panel panel-success" hidden></section>
+
+  <section id="not-completed" class="panel panel-alert" hidden></section>
+</Layout>
+
+<script>
+  import { isValidClassicAddress } from 'xrpl'
+  import { configRequiresAuth, loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
+  import { onConnectionChange } from '../lib/connect'
+  import { buildAdmissionTx } from '../lib/tx'
+  import { signCeremonyPayload } from '../lib/ceremony'
+  import { describeProposal } from '../lib/preview'
+  import {
+    getIssuanceTransactions,
+    getMptHolding,
+    getPendingRequests,
+    getRequireAuth,
+    watchProposal,
+    TESTNET_EXPLORER_BASE,
+  } from '../lib/xrplClient'
+  import {
+    admissionMemo,
+    admissionNotice,
+    admissionRequestsOf,
+    admissionState,
+    admissionsOf,
+    suggestAdmissionRef,
+    type Admission,
+    type AdmissionRequest,
+  } from '../lib/admission'
+  import { esc, formatDate, formatShortDate, shortAddress } from '../lib/format'
+  import { seatOn, seatsOf, signerRole } from '../lib/role'
+  import { NON_SIGNER_ADMIT, nonSignerHtml, problemPanelHtml, readinessHtml, renderHandoff, sentenceHtml } from '../lib/ui'
+  import { ADMISSION_RESULT_MEANING, type ProblemStatus } from '../lib/outcome'
+  import { withBase } from '../lib/paths'
+
+  /** How many recent admission requests to check against the ledger for the pick list. */
+  const MAX_PICKS = 5
+
+  const $ = (id: string) => document.getElementById(id)!
+  const pageError = $('page-error')
+  const form = $('admit-form') as HTMLFormElement
+  const accountInput = $('account-input') as HTMLInputElement
+  const refInput = $('ref-input') as HTMLInputElement
+  const kycCheck = $('kyc-check') as HTMLInputElement
+  const admitButton = $('admit-button') as HTMLButtonElement
+  const warning = $('account-warning')
+  const requestCard = $('request-card')
+
+  let connectedAddress: string | undefined
+  let stopWatching: (() => void) | undefined
+  let inFlight = false
+  /** The account whose holding was last read as ready to admit; undefined until then. */
+  let readyAccount: string | undefined
+  let checkSeq = 0
+
+  async function main() {
+    const config = await loadPublicConfig()
+    const issuer = requireIssuer(config)
+    const governance = requireGovernance(config)
+    const mptIssuanceId = requireMptIssuanceId(config)
+    const ticker = config.token.ticker
+    const seats = seatsOf(config, 'register')
+    const requireAuthRead = getRequireAuth(mptIssuanceId, configRequiresAuth(config))
+    /** Set once the ledger's issuance flags are read, before any account check. */
+    let requireAuth = false
+
+    let admissions: Admission[] = []
+    /** Latest admission request per account, from the issuer's history. */
+    let requests = new Map<string, AdmissionRequest>()
+
+    function setReady(account: string | undefined) {
+      readyAccount = account
+      admitButton.disabled = !account || !requireAuth
+      requestCard.hidden = !account
+      if (!account) return
+      $('request-address').textContent = account
+      const date = requests.get(account)?.date
+      $('request-received').textContent = date ? `Received ${formatDate(date)}` : ''
+    }
+
+    /**
+     * Reads the account's holding: an admission is only worth proposing when
+     * the account has asked (it has a holding) and isn't on the register yet.
+     * Anything else would fail on the ledger and still spend the fee.
+     */
+    async function checkAccount() {
+      const seq = ++checkSeq
+      requireAuth = await requireAuthRead
+      if (seq !== checkSeq) return
+      const account = accountInput.value.trim()
+      warning.innerHTML = ''
+      setReady(undefined)
+      if (!account) return
+      if (!isValidClassicAddress(account)) {
+        warning.innerHTML = `<div class="status error">That isn't a valid XRPL address.</div>`
+        return
+      }
+      if (account === issuer.address) {
+        warning.innerHTML = `<div class="status error">That's the Register's own account. It issues units; it doesn't hold them.</div>`
+        return
+      }
+      try {
+        const holding = await getMptHolding(account, mptIssuanceId)
+        if (seq !== checkSeq) return
+        const notice = admissionNotice(admissionState(holding, requireAuth), account, ticker)
+        if (notice) {
+          warning.innerHTML = readinessHtml(notice, '<div><button type="button" class="link-button" data-recheck>Check again</button></div>')
+          warning.querySelector('[data-recheck]')?.addEventListener('click', () => void checkAccount())
+          return
+        }
+        setReady(account)
+      } catch {
+        if (seq !== checkSeq) return
+        warning.innerHTML = '<div class="status">Could not check the account. Try again before signing.</div>'
+      }
+    }
+
+    function renderPicks(pending: AdmissionRequest[]) {
+      $('picks').innerHTML = pending
+        .map(
+          (request) => `<label class="pick">
+            <input type="radio" name="requester" value="${esc(request.account)}" />
+            <span class="pick-main"><span class="radio" aria-hidden="true"></span><span class="pick-addr" title="${esc(request.account)}">${esc(shortAddress(request.account))}</span></span>
+            <span class="pick-status">${request.date ? `Requested ${esc(formatShortDate(request.date))}` : 'Awaiting admission'}</span>
+          </label>`,
+        )
+        .join('')
+      const label = $('account-label')
+      label.textContent = pending.length > 0 ? 'Or another requesting address' : 'Requesting account address'
+      label.classList.toggle('sr-only', pending.length === 0)
+      $('picks-note').textContent =
+        pending.length > 0 ? '' : 'No admission requests on the ledger right now. Enter the address the investor shared.'
+      for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="requester"]')) {
+        radio.addEventListener('change', () => {
+          accountInput.value = radio.value
+          void checkAccount()
+        })
+      }
+    }
+
+    accountInput.addEventListener('input', () => {
+      // A new address needs a new check (on blur); drop the old result meanwhile.
+      checkSeq++
+      warning.innerHTML = ''
+      setReady(undefined)
+      const value = accountInput.value.trim()
+      for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="requester"]')) radio.checked = radio.value === value
+    })
+    accountInput.addEventListener('blur', () => void checkAccount())
+
+    function showAdmitted(holder: string, hash?: string) {
+      stopWatching?.()
+      $('handoff').hidden = true
+      form.hidden = true
+      const panel = $('admitted')
+      panel.innerHTML = `
+        <span class="panel-label">${issuer.quorum} of ${issuer.quorum} keys · Admitted</span>
+        <p class="result-sentence">${sentenceHtml(`${shortAddress(holder)} is on the register.`)}</p>
+        <p class="body-2">The Dealing Desk can now deliver units to this account. The admission and its memo are in the register ledger.</p>
+        <div class="row-wrap">
+          <a class="btn btn-primary" href="${esc(withBase('/'))}">Fund overview</a>
+          ${hash ? `<a class="btn btn-secondary" href="${esc(`${TESTNET_EXPLORER_BASE}/transactions/${hash}`)}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a>` : ''}
+        </div>`
+      panel.hidden = false
+    }
+
+    /** The proposal settled without going through: drop the stale handoff card and say why. */
+    function showNotCompleted(status: ProblemStatus, sentence: string) {
+      stopWatching?.()
+      $('handoff').hidden = true
+      const panel = $('not-completed')
+      panel.innerHTML = problemPanelHtml(status, sentence, '<button type="button" class="btn btn-primary" data-restart>Start a new admission</button>', {
+        effect: 'Nothing changed on the register.',
+        meanings: ADMISSION_RESULT_MEANING,
+      })
+      panel.hidden = false
+      panel.querySelector('[data-restart]')?.addEventListener('click', () => {
+        panel.hidden = true
+        inFlight = false
+        form.hidden = !connectedAddress || !seatOn(config, 'register', connectedAddress)
+        void checkAccount()
+      })
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      if (!connectedAddress) return
+      pageError.textContent = ''
+      const address = connectedAddress
+      const holder = accountInput.value.trim()
+      const reference = refInput.value.trim()
+      try {
+        if (!isValidClassicAddress(holder)) throw new Error("Enter the requesting account's XRPL address.")
+        if (!kycCheck.checked) throw new Error("Tick the KYC confirmation first. The admission relies on the Dealing Desk's KYC.")
+        if (!reference) throw new Error('Enter the KYC reference. It goes on the ledger as the admission memo.')
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+        return
+      }
+      await checkAccount()
+      if (readyAccount !== holder) return
+      admitButton.disabled = true
+      admitButton.classList.add('is-waiting')
+      admitButton.textContent = 'Waiting for your passkey…'
+      try {
+        const tx = await buildAdmissionTx(issuer.address, holder, mptIssuanceId, issuer.quorum, admissionMemo(reference))
+        const preview = describeProposal(tx, { ticker, mptIssuanceId, issuer: issuer.address, desk: governance.address })
+        const outcome = await signCeremonyPayload(tx, address)
+        if (outcome.status === 'error') throw new Error(outcome.message)
+        inFlight = true
+        if (outcome.status === 'submitted') {
+          showAdmitted(holder, outcome.hash)
+          return
+        }
+        form.hidden = true
+        const handoff = $('handoff')
+        handoff.hidden = false
+        await renderHandoff(handoff, {
+          keySet: 'register',
+          seats,
+          signed: new Set([address]),
+          quorum: issuer.quorum,
+          relay: preview.relay ?? preview.sentence,
+          shareUrl: outcome.shareUrl,
+        })
+        if (typeof tx.Sequence === 'number') {
+          stopWatching = watchProposal(tx, (status) => {
+            if (status.status === 'done') showAdmitted(holder, status.hash)
+            else showNotCompleted(status, preview.sentence)
+          })
+        }
+      } catch (err) {
+        pageError.textContent = err instanceof Error ? err.message : String(err)
+      } finally {
+        admitButton.disabled = readyAccount === undefined || !requireAuth
+        admitButton.classList.remove('is-waiting')
+        admitButton.textContent = 'Sign admission with passkey'
+      }
+    })
+
+    onConnectionChange((address) => {
+      connectedAddress = address ?? undefined
+      const seat = address ? seatOn(config, 'register', address) : undefined
+      const nonSigner = $('non-signer')
+      if (!seat) {
+        nonSigner.innerHTML = nonSignerHtml('register', signerRole(config, address), NON_SIGNER_ADMIT)
+        nonSigner.hidden = false
+        form.hidden = true
+        return
+      }
+      nonSigner.hidden = true
+      if (!inFlight) form.hidden = false
+    })
+
+    requireAuth = await requireAuthRead
+    if (!requireAuth) {
+      // An open issuance: nothing to admit. Say so rather than propose a ceremony the ledger would reject.
+      $('not-required').hidden = false
+      $('account-field').hidden = true
+      admitButton.disabled = true
+      return
+    }
+
+    // Admission requests are holders' own self-authorisations, filed in the issuer's history.
+    // History only: each candidate's holding is read before it's listed.
+    try {
+      const history = await getIssuanceTransactions(issuer.address, mptIssuanceId)
+      admissions = admissionsOf(history, issuer.address)
+      requests = new Map(admissionRequestsOf(history, issuer.address).map((request) => [request.account, request]))
+      const pending = await getPendingRequests(history, issuer.address, mptIssuanceId, [governance.address], MAX_PICKS)
+      renderPicks(pending)
+      // Land on the newest request, as the handoff's admission request card does.
+      const newest = pending[0]
+      if (newest && !accountInput.value.trim()) {
+        accountInput.value = newest.account
+        const radio = document.querySelector<HTMLInputElement>(`input[name="requester"][value="${newest.account}"]`)
+        if (radio) radio.checked = true
+        void checkAccount()
+      }
+    } catch {
+      renderPicks([])
+      $('picks-note').textContent = "Admission requests couldn't be read from the ledger. Enter the address the investor shared."
+    }
+    if (!refInput.value) refInput.value = suggestAdmissionRef(admissions)
+  }
+
+  window.addEventListener('pagehide', () => stopWatching?.())
+
+  main().catch((err) => {
+    pageError.textContent = err instanceof Error ? err.message : String(err)
+  })
+</script>

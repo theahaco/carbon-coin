@@ -1,4 +1,5 @@
 import type { TextMemo } from 'xrpl'
+import { KYC_RELIANCE, kycReferenceOf, type Admission } from './admission'
 import { contractNote, currentDealingDay, formatEuro, isDealingDay } from './dealing'
 import { shortAddress } from './format'
 import { isFinerThanUnits, issueDeviation, type IssueDeviation } from './procedure'
@@ -6,12 +7,12 @@ import { formatAmountExact } from './units'
 import type { MptPayment } from './xrplClient'
 
 /**
- * The public register ledger, read-only: every issue by the Register (the
- * issuer account) and every delivery by the Dealing Desk (the governance
- * account), newest first. Nothing here is enforced by the ledger; it's the
- * public trail that makes a skipped step visible.
+ * The public register ledger, read-only: every issue and admission by the
+ * Register (the issuer account) and every delivery by the Dealing Desk (the
+ * governance account), newest first. Nothing here is enforced by the
+ * ledger; it's the public trail that makes a skipped step visible.
  */
-export type LedgerStamp = 'ISSUE' | 'DELIVER' | 'REDEEM'
+export type LedgerStamp = 'ISSUE' | 'ADMIT' | 'DELIVER' | 'REDEEM'
 
 export interface LedgerRow {
   stamp: LedgerStamp
@@ -27,6 +28,8 @@ export interface LedgerRow {
 export interface LedgerInput {
   issuerPayments: MptPayment[]
   deskPayments: MptPayment[]
+  /** The Register's admissions (RequireAuth issuances only; absent or empty otherwise). */
+  admissions?: Admission[]
   issuer: string
   desk: string
   ticker: string
@@ -113,7 +116,33 @@ function deskRow(payment: MptPayment, input: LedgerInput): LedgerRow {
   }
 }
 
+/** The ledger memo for an admission: `Desk KYC reliance · ADM-0007`, as the handoff shows it. */
+export function admissionMemoLine(memos: TextMemo[]): string | undefined {
+  const reference = kycReferenceOf(memos)
+  return reference ? `${KYC_RELIANCE} · ${reference}` : undefined
+}
+
+function admitRow(admission: Admission, input: LedgerInput): LedgerRow {
+  const base = { stamp: 'ADMIT' as const, hash: admission.hash, ledgerIndex: admission.ledgerIndex, date: admission.date }
+  const firstText = admission.memos.find((memo) => memo.data)?.data
+  // The Dealing Desk is admitted once, at setup, so it can receive issues. It isn't an investor, so it carries no KYC reference.
+  if (admission.holder === input.desk) {
+    return { ...base, title: 'Admitted the Dealing Desk to the register', memo: firstText ?? '(no memo)' }
+  }
+  const line = admissionMemoLine(admission.memos)
+  return {
+    ...base,
+    title: `Admitted ${shortAddress(admission.holder)} to the register`,
+    memo: line ?? firstText ?? '(no KYC reference)',
+    offProcedure: line ? undefined : 'No KYC reference',
+  }
+}
+
 export function buildRegisterLedger(input: LedgerInput): LedgerRow[] {
-  const rows = [...input.issuerPayments.map((p) => issueRow(p, input)), ...input.deskPayments.map((p) => deskRow(p, input))]
+  const rows = [
+    ...input.issuerPayments.map((p) => issueRow(p, input)),
+    ...(input.admissions ?? []).map((a) => admitRow(a, input)),
+    ...input.deskPayments.map((p) => deskRow(p, input)),
+  ]
   return rows.sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0))
 }

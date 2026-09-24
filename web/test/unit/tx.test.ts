@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client, decodeMemo } from 'xrpl'
-import { buildProposalPaymentTx } from '../../src/lib/tx'
+import { admissionMemo } from '../../src/lib/admission'
+import { buildAdmissionTx, buildProposalPaymentTx } from '../../src/lib/tx'
 
 const issuer = 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh'
 const governance = 'rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe'
@@ -41,5 +42,20 @@ describe('GhostSig proposal preparation', () => {
       data: '2027',
     })
     expect(decodeMemo(tx.Memos![0])).toMatchObject({ type: 'mint-period', data: '2027' })
+  })
+  it('prepares a Register admission: the issuer MPTokenAuthorize naming the holder, with its KYC memo', async () => {
+    const holder = 'rwwCKTRApRm4pWeqGmsNtaKSoooNUxdMVt'
+    const tx = await buildAdmissionTx(issuer, holder, issuance, 2, admissionMemo('ADM-0001'))
+    expect(tx).toMatchObject({
+      Account: issuer,
+      TransactionType: 'MPTokenAuthorize',
+      MPTokenIssuanceID: issuance,
+      Holder: holder,
+      Sequence: 42,
+      SigningPubKey: '',
+    })
+    expect(tx.LastLedgerSequence).toBeUndefined()
+    expect(decodeMemo(tx.Memos![0])).toMatchObject({ type: 'kyc-ref', data: 'ADM-0001 · Desk KYC reliance' })
+    expect(Client.prototype.autofill).toHaveBeenCalledWith(expect.objectContaining({ Account: issuer, Holder: holder }), 2)
   })
 })

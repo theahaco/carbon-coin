@@ -17,6 +17,20 @@ const RESULT_MEANING: Record<string, string> = {
   tecNO_DST: "the destination account doesn't exist on the testnet.",
 }
 
+/** What a `tec` result means for an admission, where it differs from a payment. */
+export const ADMISSION_RESULT_MEANING: Record<string, string> = {
+  tecOBJECT_NOT_FOUND: "the account had no holding to admit: it hasn't requested admission, or it withdrew the request.",
+  tecNO_AUTH: "the issuance doesn't set RequireAuth, so there's no admission to give.",
+  tecNO_DST: "the account doesn't exist on the testnet.",
+}
+
+export interface ProblemOptions {
+  /** What didn't happen, after the result code. Payments: 'No units moved.' */
+  effect?: string
+  /** Result meanings that override the payment ones. */
+  meanings?: Record<string, string>
+}
+
 export interface ProblemCopy {
   label: string
   headline: string
@@ -24,12 +38,12 @@ export interface ProblemCopy {
 }
 
 /** Plain-language copy for a proposal that didn't go through. */
-export function problemCopy(status: ProblemStatus): ProblemCopy {
+export function problemCopy(status: ProblemStatus, opts: ProblemOptions = {}): ProblemCopy {
   if (status.status === 'failed') {
-    const meaning = RESULT_MEANING[status.result]
+    const meaning = opts.meanings?.[status.result] ?? RESULT_MEANING[status.result]
     return {
       label: 'Failed on the ledger',
-      headline: `The XRPL testnet rejected it (${status.result}). No units moved.`,
+      headline: `The XRPL testnet rejected it (${status.result}). ${opts.effect ?? 'No units moved.'}`,
       detail: `${meaning ? `The ledger's reason: ${meaning} ` : ''}Its sequence is now spent, so this proposal can't be submitted again. Fix the cause, then propose it afresh.`,
     }
   }

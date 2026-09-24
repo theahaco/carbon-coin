@@ -2,6 +2,7 @@ import {
   Client,
   RippledError,
   decodeMemo,
+  fetchMPTokenIssuanceOrUndefined,
   fetchMPTokenOrUndefined,
   parseAccountRootFlags,
   parseMPTokenFlags,
@@ -10,8 +11,9 @@ import {
   type MPTokenIssuanceFlagsInterface,
   type TextMemo,
 } from 'xrpl'
+import { admissionRequestsOf, admissionsOf, unadmittedRequests, type AdmissionRequest } from './admission'
 import { suggestNextDealingDay } from './dealing'
-import { describeReadiness, type ReadinessNotice } from './readiness'
+import { LOCK_CHECK, describeReadiness, type LockSides, type ReadinessNotice } from './readiness'
 
 // GHOSTSIG only understands XRPL testnet/devnet/mainnet, so this demo is
 // pinned to the public Testnet -- the same network `XRPL_NETWORK=testnet`
@@ -43,7 +45,10 @@ export async function getOutstandingSupplyRaw(mptIssuanceId: string): Promise<st
 }
 
 export interface MptHolding {
-  authorized: boolean
+  /** The account has an MPToken for this issuance: it self-authorised (asked to hold units). */
+  hasHolding: boolean
+  /** The issuer admitted it (`lsfMPTAuthorized`). Only meaningful when the issuance sets RequireAuth. */
+  admitted: boolean
   balanceRaw: string
   locked: boolean
 }
@@ -52,10 +57,12 @@ export interface MptHolding {
 export async function getMptHolding(address: string, mptIssuanceId: string): Promise<MptHolding> {
   const client = await getClient()
   const token = await fetchMPTokenOrUndefined(client, address, mptIssuanceId, 'validated')
+  const flags = token ? parseMPTokenFlags(token.Flags) : undefined
   return {
-    authorized: token !== undefined,
+    hasHolding: token !== undefined,
+    admitted: Boolean(flags?.lsfMPTAuthorized),
     balanceRaw: token?.MPTAmount ?? '0',
-    locked: token ? Boolean(parseMPTokenFlags(token.Flags).lsfMPTLocked) : false,
+    locked: Boolean(flags?.lsfMPTLocked),
   }
 }
 
@@ -68,11 +75,29 @@ export async function checkTransfer(
   account: string,
   destination: string,
   mptIssuanceId: string,
-  opts: { source: string; amount?: string },
+  opts: { source: string; amount?: string; requireAuth?: boolean },
 ): Promise<ReadinessNotice | null> {
   const client = await getClient()
   const readiness = await client.getMptTransferReadiness({ account, destination, mptIssuanceId, amount: opts.amount })
-  return describeReadiness(readiness, { destination, source: opts.source })
+  // The SDK's lock check doesn't say what's locked. Read it at the same ledger; if that fails, the copy names both possibilities.
+  const locks = readiness.checks.some((check) => check.message === LOCK_CHECK && check.status !== 'pass')
+    ? await readLocks(client, account, destination, mptIssuanceId, readiness.ledgerIndex).catch(() => undefined)
+    : undefined
+  return describeReadiness(readiness, { destination, source: opts.source, requireAuth: opts.requireAuth, locks })
+}
+
+/** Which of the issuance and the two holdings carry lsfMPTLocked at `ledgerIndex`. */
+async function readLocks(client: Client, account: string, destination: string, mptIssuanceId: string, ledgerIndex: number): Promise<LockSides> {
+  const [issuance, source, target] = await Promise.all([
+    fetchMPTokenIssuanceOrUndefined(client, mptIssuanceId, ledgerIndex),
+    fetchMPTokenOrUndefined(client, account, mptIssuanceId, ledgerIndex),
+    fetchMPTokenOrUndefined(client, destination, mptIssuanceId, ledgerIndex),
+  ])
+  return {
+    issuance: Boolean(issuance && parseMPTokenIssuanceFlags(issuance.Flags).lsfMPTLocked),
+    source: Boolean(source && parseMPTokenFlags(source.Flags).lsfMPTLocked),
+    destination: Boolean(target && parseMPTokenFlags(target.Flags).lsfMPTLocked),
+  }
 }
 
 /** Returns the account's XRP balance in drops, or `undefined` if it isn't funded/activated yet. */
@@ -102,6 +127,19 @@ export async function getIssuanceState(mptIssuanceId: string): Promise<IssuanceS
   const res = await client.command.ledgerEntry({ mpt_issuance: mptIssuanceId })
   const node = res.result.node as { OutstandingAmount?: string; Flags?: number }
   return { outstandingRaw: node.OutstandingAmount ?? '0', flags: parseMPTokenIssuanceFlags(node.Flags ?? 0) }
+}
+
+/**
+ * Whether the issuance sets RequireAuth, so every holder needs the
+ * Register's admission. Read from the ledger; if that read fails, from the
+ * flags deployment.json published, else false (the open Phase 1 issuance).
+ */
+export async function getRequireAuth(mptIssuanceId: string, publishedFlag: boolean | undefined): Promise<boolean> {
+  try {
+    return Boolean((await getIssuanceState(mptIssuanceId)).flags.lsfMPTRequireAuth)
+  } catch {
+    return publishedFlag ?? false
+  }
 }
 
 /** Whether the account's master key is disabled (so only its signer list can sign for it). */
@@ -160,6 +198,113 @@ export async function getOutgoingMptPayments(account: string, mptIssuanceId: str
       },
     ]
   })
+}
+
+/**
+ * One validated, successful transaction that names this issuance (in
+ * `MPTokenIssuanceID` or an MPT `Amount`), from an account's history, with
+ * its text memos decoded. The issuer's history carries more than its own
+ * transactions: the ledger also files every holder's MPToken change there,
+ * so a holder's self-authorisation (an admission request) shows up too.
+ */
+export interface IssuanceTransaction {
+  type: string
+  account: string
+  holder?: string
+  flags: number
+  memos: TextMemo[]
+  hash?: string
+  ledgerIndex?: number
+  sequence?: number
+  date?: Date
+}
+
+/** Reads one API v1 `account_tx` row. Undefined unless it's validated, succeeded and names this issuance. */
+export function issuanceTransactionOf(
+  row: { tx?: unknown; meta?: unknown; validated?: unknown },
+  mptIssuanceId: string,
+): IssuanceTransaction | undefined {
+  const tx = row.tx as Record<string, unknown> | undefined
+  const meta = row.meta as { TransactionResult?: unknown } | string | undefined
+  if (row.validated !== true || !tx || typeof meta !== 'object' || meta.TransactionResult !== 'tesSUCCESS') return undefined
+  const amount = tx.Amount as { mpt_issuance_id?: unknown } | string | undefined
+  const namesIssuance =
+    tx.MPTokenIssuanceID === mptIssuanceId || (typeof amount === 'object' && amount !== null && amount.mpt_issuance_id === mptIssuanceId)
+  if (!namesIssuance || typeof tx.TransactionType !== 'string' || typeof tx.Account !== 'string') return undefined
+  return {
+    type: tx.TransactionType,
+    account: tx.Account,
+    holder: typeof tx.Holder === 'string' ? tx.Holder : undefined,
+    flags: typeof tx.Flags === 'number' ? tx.Flags : 0,
+    memos: textMemos(tx.Memos as Parameters<typeof textMemos>[0]),
+    hash: typeof tx.hash === 'string' ? tx.hash : undefined,
+    ledgerIndex: typeof tx.ledger_index === 'number' ? tx.ledger_index : undefined,
+    sequence: typeof tx.Sequence === 'number' ? tx.Sequence : undefined,
+    date: typeof tx.date === 'number' ? new Date(rippleTimeToUnixTime(tx.date)) : undefined,
+  }
+}
+
+/** How many `account_tx` pages (of up to 200 rows) to read for an issuance's history before stopping. */
+const ISSUANCE_HISTORY_PAGES = 10
+
+/**
+ * Every transaction in `account`'s available history that names this
+ * issuance, newest first (see `IssuanceTransaction`). Reads at most
+ * `ISSUANCE_HISTORY_PAGES` pages; a failed page throws.
+ */
+export async function getIssuanceTransactions(account: string, mptIssuanceId: string): Promise<IssuanceTransaction[]> {
+  const client = await getClient()
+  const found: IssuanceTransaction[] = []
+  let marker: unknown
+  for (let page = 0; page < ISSUANCE_HISTORY_PAGES; page++) {
+    const { result } = await client.request({
+      command: 'account_tx',
+      account,
+      api_version: 1,
+      binary: false,
+      forward: false,
+      limit: 200,
+      marker,
+    })
+    for (const row of result.transactions) {
+      const entry = issuanceTransactionOf(row, mptIssuanceId)
+      if (entry) found.push(entry)
+    }
+    marker = result.marker
+    if (marker == null) break
+  }
+  return found
+}
+
+/**
+ * Admission requests still waiting, newest first: requests in the issuer's
+ * history with no admission after them (at most `max`, skipping `exclude`),
+ * each confirmed on the ledger as a holding the Register hasn't admitted.
+ * A candidate whose holding can't be read is left out.
+ */
+export async function getPendingRequests(
+  history: IssuanceTransaction[],
+  issuer: string,
+  mptIssuanceId: string,
+  exclude: string[],
+  max = 5,
+): Promise<AdmissionRequest[]> {
+  const candidates = unadmittedRequests(admissionRequestsOf(history, issuer), admissionsOf(history, issuer), exclude).slice(0, max)
+  const holdings = await Promise.allSettled(candidates.map((request) => getMptHolding(request.account, mptIssuanceId)))
+  return candidates.filter((_, i) => {
+    const holding = holdings[i]
+    return holding?.status === 'fulfilled' && holding.value.hasHolding && !holding.value.admitted
+  })
+}
+
+/** Each account's holding, read in parallel. An account whose read fails is left out of the map. */
+export async function getMptHoldings(addresses: string[], mptIssuanceId: string): Promise<Map<string, MptHolding>> {
+  const reads = await Promise.allSettled(addresses.map((address) => getMptHolding(address, mptIssuanceId)))
+  const holdings = new Map<string, MptHolding>()
+  reads.forEach((read, i) => {
+    if (read.status === 'fulfilled') holdings.set(addresses[i]!, read.value)
+  })
+  return holdings
 }
 
 /** The dealing-day label an issue carries (memo type `mint-period`), if any. */
@@ -229,6 +374,9 @@ export interface ProposalIdentity {
   TransactionType?: unknown
   Destination?: unknown
   Amount?: unknown
+  /** The account an admission names (MPTokenAuthorize). */
+  Holder?: unknown
+  MPTokenIssuanceID?: unknown
 }
 
 export interface LandedTransaction {
@@ -279,20 +427,24 @@ export async function findTransactionBySequence(account: string, sequence: numbe
 }
 
 function sameAmount(a: unknown, b: unknown): boolean {
+  // An admission carries no amount at all.
+  if (a === undefined || b === undefined) return a === b
   if (typeof a === 'string' || typeof b === 'string') return a === b
   const x = a as { mpt_issuance_id?: unknown; value?: unknown } | undefined
   const y = b as { mpt_issuance_id?: unknown; value?: unknown } | undefined
   return Boolean(x && y) && x!.mpt_issuance_id === y!.mpt_issuance_id && String(x!.value) === String(y!.value)
 }
 
-/** Whether a landed transaction is this proposal: same sender, sequence, type, destination and amount. */
+/** Whether a landed transaction is this proposal: same sender, sequence, type, destination, amount, holder and issuance. */
 export function isSameProposal(landed: Record<string, unknown>, proposal: ProposalIdentity): boolean {
   return (
     landed.Account === proposal.Account &&
     landed.Sequence === proposal.Sequence &&
     landed.TransactionType === proposal.TransactionType &&
     landed.Destination === proposal.Destination &&
-    sameAmount(landed.Amount, proposal.Amount)
+    sameAmount(landed.Amount, proposal.Amount) &&
+    landed.Holder === proposal.Holder &&
+    landed.MPTokenIssuanceID === proposal.MPTokenIssuanceID
   )
 }
 

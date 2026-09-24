@@ -102,7 +102,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
             <span class="keyset-name">{brand.keySets.register.name}</span>
             <span class="keyset-quorum" id="register-quorum">2 of 3</span>
           </div>
-          <span class="keyset-text">Depositary, registrar and administrator. Issues units and holds the controls.</span>
+          <span class="keyset-text" id="register-text">Depositary, registrar and administrator. Issues units and holds the controls.</span>
           <div class="row-wrap" style="gap:6px" id="register-chips">
             {seatChips('register').map((name) => <span class="chip">{name}</span>)}
           </div>
@@ -183,12 +183,13 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
 
 <script>
   import type { MPTokenIssuanceFlagsInterface } from 'xrpl'
-  import { loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
+  import { configRequiresAuth, loadPublicConfig, requireGovernance, requireIssuer, requireMptIssuanceId } from '../lib/config'
   import { onConnectionChange, showRoleInHeader } from '../lib/connect'
   import { ghostsigSign, GhostsigError } from '../lib/ghostsig'
   import {
     getClient,
     getIssuanceState,
+    getIssuanceTransactions,
     getMptHolding,
     getOutgoingMptPayments,
     getXrpBalanceDrops,
@@ -196,12 +197,14 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     checkTransfer,
     mintPeriodOf,
     TESTNET_EXPLORER_BASE,
+    type IssuanceTransaction,
     type MptPayment,
   } from '../lib/xrplClient'
+  import { admissionsOf, admittedOn, type Admission } from '../lib/admission'
   import { buildRegisterLedger, lastDeliveryLine, orderRefOf } from '../lib/ledger'
   import { currentDealingDay, formatDealingDay, formatEuro, illustrativeDealing, parseDealingMonth, suggestNextDealingDay } from '../lib/dealing'
-  import { esc, formatShortDate, joinList } from '../lib/format'
-  import { numberWord, seatFor, seatsOf } from '../lib/role'
+  import { esc, formatDate, formatShortDate, joinList } from '../lib/format'
+  import { holderRole, numberWord, seatFor, seatsOf } from '../lib/role'
   import { formatUnits, parseUnits } from '../lib/units'
   import { readinessHtml, statusHtml } from '../lib/ui'
   import { withBase } from '../lib/paths'
@@ -260,8 +263,15 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     $('facade-caption').textContent = `Each bay is a ${year} dealing day. Lit bays have issued.`
   }
 
-  function renderLedger(issuerPayments: MptPayment[], deskPayments: MptPayment[], issuer: string, desk: string, ticker: string) {
-    const rows = buildRegisterLedger({ issuerPayments, deskPayments, issuer, desk, ticker })
+  function renderLedger(
+    issuerPayments: MptPayment[],
+    deskPayments: MptPayment[],
+    admissions: Admission[] | undefined,
+    issuer: string,
+    desk: string,
+    ticker: string,
+  ) {
+    const rows = buildRegisterLedger({ issuerPayments, deskPayments, admissions, issuer, desk, ticker })
     const list = $('ledger-rows')
     if (rows.length === 0) {
       list.innerHTML = '<li class="ledger-empty">No entries yet. The first dealing day\'s issue will appear here.</li>'
@@ -269,6 +279,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
       list.innerHTML = rows
         .slice(0, LEDGER_ROWS)
         .map((row) => {
+          // ADMIT and REDEEM keep the ink stamp.
           const stampClass = row.stamp === 'ISSUE' ? 'issue' : row.stamp === 'DELIVER' ? 'deliver' : ''
           const inner = `
             <span class="stamp ${stampClass}">${esc(row.stamp)}</span>
@@ -283,6 +294,9 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
             : `<li class="ledger-row">${inner}</li>`
         })
         .join('')
+    }
+    if (admissions === undefined) {
+      list.insertAdjacentHTML('beforeend', '<li class="ledger-empty">Admissions couldn\'t be read right now. The explorer link below has every entry.</li>')
     }
     const more = $('ledger-more') as HTMLAnchorElement
     more.href = explorerAccount(issuer)
@@ -313,6 +327,10 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
 
   /** Desk deliveries, newest first; resolves to [] if the history can't be read. */
   let deliveries: Promise<MptPayment[]> = Promise.resolve([])
+  /** Whether the issuance requires the Register to admit each holder. */
+  let requireAuthRead: Promise<boolean> = Promise.resolve(false)
+  /** The Register's admissions, newest first; resolves to [] if the history can't be read. */
+  let admissionsRead: Promise<Admission[]> = Promise.resolve([])
   /** Guards against an older, slower render overwriting a newer one (e.g. a disconnect mid-read). */
   let renderSeq = 0
 
@@ -351,7 +369,8 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
           : 'The Desk holds no units between dealing days.'
       const cta =
         seat.keySet === 'register'
-          ? `<a class="btn btn-primary" href="${esc(withBase('/propose-mint'))}">Dealing day</a>`
+          ? `<a class="btn btn-primary" href="${esc(withBase('/propose-mint'))}">Dealing day</a>
+             <a class="btn btn-secondary" href="${esc(withBase('/admit'))}">Admit investor</a>`
           : `<a class="btn btn-primary" href="${esc(withBase('/propose-disbursement'))}">Deliver units</a>`
       accountBody.innerHTML = `
         <p class="body-2">Connected as the <strong style="color:var(--role-${seat.keySet})">${esc(seat.name)}</strong> seat of the ${setName} key. ${esc(tail)}</p>
@@ -371,16 +390,26 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
         return
       }
       const holding = await getMptHolding(address, mptIssuanceId)
-      const history = await deliveries
+      const [history, requireAuth, admissions] = await Promise.all([deliveries, requireAuthRead, admissionsRead])
       if (seq !== renderSeq) return
-      if (!holding.authorized) {
-        renderNotHolding(address, mptIssuanceId, ticker)
+      const role = holderRole(holding, requireAuth)
+      showRoleInHeader(role)
+      if (!holding.hasHolding) {
+        renderNotHolding(address, mptIssuanceId, ticker, requireAuth)
         return
       }
-      showRoleInHeader(holding.locked ? 'locked' : 'investor')
+      if (role === 'pending') {
+        accountBody.innerHTML = `
+          <span class="tag-outline">Awaiting admission</span>
+          <p>Your account is waiting to be admitted to the register.</p>
+          <span class="address small-muted">${esc(address)}</span>`
+        return
+      }
       const last = history.find((payment) => payment.destination === address)
       const ref = last ? orderRefOf(last.memos) : undefined
       const lastLine = last ? lastDeliveryLine(ref, last.date) : 'No deliveries from the Dealing Desk yet.'
+      const admitted = requireAuth ? admittedOn(admissions, address) : undefined
+      const accountLine = admitted ? `Admitted to the register on ${formatDate(admitted)}. ${lastLine}` : lastLine
       accountBody.innerHTML = `
         <div class="stack-tight" style="gap:2px">
           <span class="label">Your holding</span>
@@ -389,7 +418,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
         ${
           holding.locked
             ? `<div class="panel panel-alert"><span class="panel-label">Stop-transfer in place</span><span>Transfers paused on this holding while the register reviews it. Your units are safe.</span></div>`
-            : `<p class="body-2">${esc(lastLine)}</p>`
+            : `<p class="body-2">${esc(accountLine)}</p>`
         }`
       if (!holding.locked) appendTransfer(address, mptIssuanceId, ticker)
     } catch {
@@ -402,8 +431,21 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     return text.charAt(0).toUpperCase() + text.slice(1)
   }
 
-  function renderNotHolding(address: string, mptIssuanceId: string, ticker: string) {
-    accountBody.innerHTML = `
+  /**
+   * No holding yet. On an open issuance the account self-authorises and can
+   * hold units at once (with the Phase 1 disclosure). Under RequireAuth the
+   * same transaction is the admission request: it sets up an empty holding
+   * that the Register then admits.
+   */
+  function renderNotHolding(address: string, mptIssuanceId: string, ticker: string, requireAuth: boolean) {
+    accountBody.innerHTML = requireAuth
+      ? `
+      <p class="body-2">Your account isn't on the register yet.</p>
+      <span class="address small-muted">${esc(address)}</span>
+      <div><button type="button" class="btn btn-primary" id="authorize-button">Request admission</button></div>
+      <p class="small-muted">This sets up an empty ${esc(ticker)} holding on the ledger. A Register keyholder then admits your account, relying on the Dealing Desk's KYC.</p>
+      <div id="authorize-result"></div>`
+      : `
       <p class="body-2">Your account doesn't hold ${esc(ticker)} yet.</p>
       <span class="address small-muted">${esc(address)}</span>
       <div><button type="button" class="btn btn-primary" id="authorize-button">Self-authorise to hold ${esc(ticker)}</button></div>
@@ -416,7 +458,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
       try {
         const tx = (await getClient()).forAccount(address).tx.mpTokenAuthorize({ MPTokenIssuanceID: mptIssuanceId }).toJSON()
         const signed = await ghostsigSign({ payload: { ...tx }, address, submit: true })
-        result.innerHTML = `<div class="status success">Authorised. <a href="${esc(explorerTx(signed.hash))}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a></div>`
+        result.innerHTML = `<div class="status success">${requireAuth ? 'Admission requested.' : 'Authorised.'} <a href="${esc(explorerTx(signed.hash))}" target="_blank" rel="noopener noreferrer">View on testnet explorer ↗</a></div>`
         window.setTimeout(() => {
           if (getStoredAddress() === address) void renderAccount(address)
         }, 4000)
@@ -464,7 +506,7 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
       warning.innerHTML = ''
       if (!to) return
       try {
-        const notice = await checkTransfer(address, to, mptIssuanceId, { source: 'Your account' })
+        const notice = await checkTransfer(address, to, mptIssuanceId, { source: 'Your account', requireAuth: await requireAuthRead })
         if (notice) warning.innerHTML = readinessHtml(notice)
       } catch {
         warning.innerHTML = statusHtml('error', 'Could not check the destination. Try again before signing.')
@@ -517,21 +559,34 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     $('tech-desk-label').textContent = `Dealing Desk account (${governance.quorum}-of-${governance.signers.length} signer list)`
 
     const deskPaymentsRead = getOutgoingMptPayments(governance.address, mptIssuanceId)
+    // The issuer's history also holds every holder's MPToken change: admissions and admission requests.
+    const registerHistoryRead: Promise<IssuanceTransaction[]> = getIssuanceTransactions(issuer.address, mptIssuanceId)
+    const issuanceRead = getIssuanceState(mptIssuanceId)
     deliveries = deskPaymentsRead.then(
       (payments) => [...payments].sort((a, b) => (b.ledgerIndex ?? 0) - (a.ledgerIndex ?? 0)),
+      () => [],
+    )
+    // The ledger's flags decide; the published ones stand in if the read fails.
+    requireAuthRead = issuanceRead.then(
+      (state) => Boolean(state.flags.lsfMPTRequireAuth),
+      () => configRequiresAuth(config) ?? false,
+    )
+    admissionsRead = registerHistoryRead.then(
+      (transactions) => admissionsOf(transactions, issuer.address),
       () => [],
     )
     onConnectionChange((address) => {
       void renderAccount(address)
     })
 
-    const [issuance, deskHolding, issuerPayments, deskPayments, issuerMaster, deskMaster] = await Promise.allSettled([
-      getIssuanceState(mptIssuanceId),
+    const [issuance, deskHolding, issuerPayments, deskPayments, issuerMaster, deskMaster, registerHistory] = await Promise.allSettled([
+      issuanceRead,
       getMptHolding(governance.address, mptIssuanceId),
       getOutgoingMptPayments(issuer.address, mptIssuanceId),
       deskPaymentsRead,
       isMasterKeyDisabled(issuer.address),
       isMasterKeyDisabled(governance.address),
+      registerHistoryRead,
     ])
 
     const periods = issuerPayments.status === 'fulfilled' ? issuerPayments.value.map((p) => mintPeriodOf(p.memos) ?? '') : []
@@ -560,6 +615,9 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
       $('tech-flags').textContent = flagNames(issuance.value.flags).join(' · ') || 'none'
       const masterDisabled = issuerMaster.status === 'fulfilled' && issuerMaster.value && deskMaster.status === 'fulfilled' && deskMaster.value
       renderIssuersPanel(issuance.value.flags, masterDisabled)
+      if (issuance.value.flags.lsfMPTRequireAuth) {
+        $('register-text').textContent = 'Depositary, registrar and administrator. Issues units, admits holders, holds the controls.'
+      }
     } else {
       for (const id of ['tile-issue', 'tile-desk', 'tile-investors', 'tile-dealing']) $(id).textContent = 'unavailable'
       $('tech-flags').textContent = 'unavailable'
@@ -574,7 +632,8 @@ const seatChips = (keySet: 'register' | 'desk') => brand.seats[keySet]
     }
 
     if (issuerPayments.status === 'fulfilled' && deskPayments.status === 'fulfilled') {
-      renderLedger(issuerPayments.value, deskPayments.value, issuer.address, governance.address, ticker)
+      const admissions = registerHistory.status === 'fulfilled' ? admissionsOf(registerHistory.value, issuer.address) : undefined
+      renderLedger(issuerPayments.value, deskPayments.value, admissions, issuer.address, governance.address, ticker)
     } else {
       $('ledger-rows').innerHTML = '<li class="ledger-empty">The ledger history is unavailable right now. The explorer link below has every entry.</li>'
       ;($('ledger-more') as HTMLAnchorElement).href = explorerAccount(issuer.address)
