@@ -1,5 +1,9 @@
 # From app plumbing to SDK workflows
 
+This document records the SDK adoption in PR #10. For the current local CLI
+walkthrough, start with the [README](../README.md) and [Bash examples](../scripts/).
+The Node helpers described below now live under test/helpers/ as SDK fixtures.
+
 Carbon Coin now consumes `xrpl@5.3.0-aha.devx.1` at
 [`d3fb578b`](https://github.com/theahaco/xrpl.js/commit/d3fb578b1e4a500d75bda1f7eea21ddacd366195).
 Both Node and browser builds use this exact source pin. This follows
@@ -43,7 +47,7 @@ const blob = multisign(signers.map(({ seed }) =>
 return client.submitAndWait(blob)
 ```
 
-After, [the mint script](../src/scripts/mint.ts) states the transaction intent:
+After, [the mint script in PR #10](https://github.com/theahaco/carbon-coin/blob/816e29d56d976eda9a434c5bbadabdf2c4bb4f8f/src/scripts/mint.ts) states the transaction intent:
 
 ```ts
 const result = await client.forAccount(issuer.address).tx.payment({

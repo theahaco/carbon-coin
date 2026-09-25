@@ -1,4 +1,4 @@
-import { localSigners } from '../../src/lib/multisig.js'
+import { localSigners } from '../helpers/sdk/multisig.js'
 import { MPTokenIssuanceSetFlags } from 'xrpl'
 import { MPTokenFlags } from 'xrpl'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'

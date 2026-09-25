@@ -10,12 +10,8 @@ export interface LedgerAdvanceLoop {
  * interval so that transactions submitted against `wsUrl` actually
  * validate.
  *
- * Used two ways:
- * - In-process, by the integration test helper (`test/helpers/localNetwork.ts`),
- *   which calls `stop()` in the test file's `afterAll`.
- * - As a detached background process (see `devnet/ledgerAdvanceProcess.ts`),
- *   spawned by `npm run devnet:up` so the loop keeps running independent of
- *   any single script invocation, and killed by `npm run devnet:down`.
+ * Test-only: SDK assertions need automatic ledger closes. The operational
+ * Rust CLI uses tx submit --wait --accept-ledger instead.
  */
 export async function startLedgerAdvanceLoop(wsUrl: string, intervalMs = 500): Promise<LedgerAdvanceLoop> {
   const client = new Client(wsUrl)

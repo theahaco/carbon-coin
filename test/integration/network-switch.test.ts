@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveNetwork } from '../../src/lib/network.js'
+import { resolveNetwork } from '../helpers/sdk/network.js'
 
 describe('network switching', () => {
   it('resolves the local stand-alone endpoint by default', () => {

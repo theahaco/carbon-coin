@@ -1,210 +1,166 @@
-# xrpl-token
+# Carbon Coin: a Rust CLI walkthrough
 
-A simple fungible token on the XRP Ledger, built on the native **MPToken**
-standard (not classic trust-line Issued Currencies). New supply is minted
-annually via a multisig-gated issuer account and sent to a multisig-gated
-governance account, which will later decide fund allocation.
+Create an XRPL multi-purpose token (MPT), give its issuer and governance accounts
+separate 2-of-3 signer lists, mint 1,000 units, and transfer 250 to a holder.
 
+The walkthrough is eight small Bash scripts in [scripts/](scripts/). Open each
+script before running it: every transaction is a visible sequence of CLI commands.
+You only need to recognize variables and pipes; no TypeScript or jq syntax is
+needed to follow the examples.
 
-## Aha DevX prototype
+## Get ready
 
-This branch uses [the aha SDK stack (#59 → #62)](https://github.com/theahaco/xrpl.js/issues/58),
-version `5.3.0-aha.devx.1`,
-pinned to the commit in [`prototype.json`](prototype.json). Run `npm run prototype:setup`
-before installing this app. It creates an ignored `.prototype/xrpl.js` checkout and
-builds all seven SDK packages; both the CLI and browser resolve that same build.
-No npm release or developer-specific checkout path is needed. CI uses the same setup.
-To update the SDK, change the commit pin, rerun setup, and refresh both lockfiles.
+Install Bash, Git, Rust/Cargo, a C compiler, jq, and Docker with Compose.
+Linux source builds also need pkg-config and the OpenSSL development package.
+Node and npm are only needed for the separate browser app and automated tests.
 
-Local signing uses `client.withWallet(wallet).tx` on the existing connection.
-Multisig uses `client.forAccount(address).tx` and throws unless the transaction
-validates successfully. Ledger reads use the discoverable `client.command` API with inferred
-response types. GhostSig still owns browser keys and the multi-person ceremony;
-we never instantiate a local signing wallet for a GhostSig address.
+Run all commands from this repository's root directory:
 
-See [the SDK stack cleanup](docs/aha-sdk-stack-cleanup.md) for the new before/after
-examples, deleted helpers and verification. The [initial migration PR](https://github.com/theahaco/carbon-coin/pull/9)
-records the findings that motivated this stack.
+~~~sh
+bash scripts/setup-cli.sh
+bash scripts/start.sh
+~~~
 
-## Design summary
+The installer builds the exact revision in [cli.json](cli.json):
+[xrpl-rust PR #44](https://github.com/theahaco/xrpl-rust/pull/44),
+commit 7fd4b41631d0ff3aefb13f6cc35e8bc2960276c6. This upstream stack is still
+unmerged. [cli/Cargo.lock](cli/Cargo.lock) keeps the source build reproducible;
+an installable upstream release can eventually replace this bootstrap.
 
-- **Token standard**: XRPL native MPToken (`MPTokenIssuanceCreate` /
-  `MPTokenAuthorize` / `Payment`).
-- **Supply**: open-ended (no `MaximumAmount`), whole units only (`AssetScale`
-  omitted) — no decimals, no floating-point conversion anywhere.
-- **Issuance flags**: transferable, lockable (freeze), clawback-able. Not
-  allow-listed (`tfMPTRequireAuth` is not set) — any account can hold the
-  token once it self-authorizes.
-- **Issuer account**: the MPT issuance itself is a single-sig bootstrap
-  action, signed with the account's still-active throwaway master key. The
-  account is then established as a 2-of-3 multisig and its master key is
-  disabled immediately after — so from that point on, the annual mint,
-  lock/unlock, and clawback are all provably multisig-only actions.
-- **Governance account** likewise self-authorizes to hold the MPT as a
-  single-sig bootstrap action before its master key is disabled; from then
-  on it's a 2-of-3 multisig, independent of whatever real-world governance
-  process eventually decides where funds go.
-- Both 2-of-3 signer sets are **placeholders** for local/Testnet development
-  — replace them with real keys before any production use.
+The Docker node listens on localhost ports 5005 (HTTP) and 6006 (WebSocket).
+It closes ledgers when a script submits a transaction, so no background ledger
+process is needed. Stop any older demo node occupying those ports first.
 
-See `devnet/rippled.cfg` and `src/lib/` for implementation details and
-inline rationale. All local-network tooling (starting/stopping the
-stand-alone node, keeping its ledger advancing, the `devnet:up`/`devnet:down`
-CLI) lives under `devnet/`, separate from the token/XRPL application logic
-in `src/`.
+## Run the examples
 
-## Prerequisites
+~~~sh
+bash scripts/01-wallets.sh      # Generate keys and register account names
+bash scripts/02-fund.sh         # Fund issuer, governance, and holder with test XRP
+bash scripts/03-issuer.sh       # Create the token and secure its issuer
+bash scripts/04-governance.sh   # Authorize governance and secure its account
+bash scripts/05-mint.sh         # Mint 1,000 units to governance
+bash scripts/06-holder.sh       # Let the holder opt in to receiving this token
+bash scripts/07-transfer.sh     # Transfer 250 units from governance to holder
+bash scripts/08-status.sh       # Inspect the accounts, token, and balances
+~~~
 
-- Node.js 22.12+ (required by Astro, used for the web frontend)
-- Docker — only required for `XRPL_NETWORK=local` (this project was
-  developed and tested against [colima](https://github.com/abiosoft/colima);
-  Docker Desktop should also work). Skip it entirely by using
-  `XRPL_NETWORK=testnet` instead; see [Networks](#networks) below.
+The final balances are **750 units in governance** and **250 in the holder**.
+Issuer and governance each have their master key disabled and their own
+independent set of three signers. Any two signers from the relevant set can act.
 
-## Setup
+Edit the amount near the top of the mint or transfer script to experiment.
+Edit [demo/token-metadata.json](demo/token-metadata.json) before creating the
+token to change its identity. The short field names are the XLS-89 metadata
+format: t = ticker, n = name, d = description, i = icon, ac/as = asset
+class/subclass, and in = issuer name. Units are whole numbers; transfer, lock,
+and clawback are enabled.
 
-```sh
-npm run prototype:setup   # builds the exact aha SDK commit in prototype.json
+## Read a transaction
+
+The wallet step creates a named key and records its account directly in the CLI:
+
+~~~bash
+xrpl key generate issuer --algorithm ed25519
+xrpl account add issuer --key issuer --network-id 0
+~~~
+
+The CLI derives the account's address from its key. There is no separate address
+map to maintain. Account names select who acts; key names select who signs.
+
+The mint script is the main example:
+
+~~~bash
+AMOUNT=1000
+
+xrpl tx new payment --account issuer \
+  --destination "$(xrpl account show governance --address)" \
+  --amount "$AMOUNT/$MPT_ID" --memo "CLI demo mint" |
+  xrpl tx autofill --url "$URL" --signers 2 |
+  xrpl tx sign --multisign --sign-with issuer_signer_1 |
+  xrpl tx sign --multisign --sign-with issuer_signer_2 |
+  xrpl tx submit --url "$URL" --wait --accept-ledger
+~~~
+
+- A variable such as $AMOUNT holds a value used by the command.
+- $(xrpl account show governance --address) reads the address from the named
+  CLI record and inserts it into the command. No JSON parsing is needed.
+- A backslash continues a command on the next line.
+- A pipe sends one command's JSON output to the next command.
+- **new** creates a transaction. The amount is units/token-ID for an MPT.
+- **autofill** fills in the account sequence, fee, and ledger expiry.
+- **sign** adds a signature from a named key in the CLI store.
+- **submit** sends it and waits for validation. The accept-ledger option closes
+  a ledger on the standalone node.
+
+The same four stages appear throughout the examples. The CLI accepts a name
+directly for the account option. Destinations and signer entries still require
+addresses, obtained with account show NAME --address from the same CLI store.
+Signing uses an explicit named key, such as --sign-with issuer_signer_1.
+The helpers in [scripts/lib/](scripts/lib/) handle the node check and token ID;
+jq is still a setup dependency, but account lookups do not need it and there
+are no jq expressions in the numbered scripts.
+
+To try CLI commands directly in your terminal, load the same environment first:
+
+~~~bash
+source scripts/lib/environment.sh
+xrpl key ls
+xrpl account ls
+xrpl account show issuer --address
+xrpl account info --account issuer --signer-lists --url "$URL"
+xrpl tx new payment --help
+~~~
+
+## Start over
+
+Run the numbered setup steps once, in order. Minting or transferring again
+performs another payment. These are disposable examples: they do not implement
+annual mint limits, deployment migration, or automatic recovery after an
+interrupted transaction.
+
+Everything generated by the walkthrough is in the ignored .demo/ directory,
+including the CLI's encrypted key store. The scripts use a public demo passphrase
+and a public standalone genesis seed. Use them only with a disposable local node;
+they are not Testnet or production deployment tooling.
+
+To remove the local ledger and its demo keys and repeat from step 1:
+
+~~~sh
+bash scripts/stop.sh
+rm -rf .demo
+bash scripts/start.sh
+~~~
+
+The CLI build is retained, so it does not need to be rebuilt. DEMO_DIR and
+XRPL_URL can select a different scratch directory and local HTTP port for tests.
+
+## Browser app and development
+
+The existing Astro/GhostSig app is separate from this local CLI walkthrough. Its
+checked-in configuration continues to target its existing Testnet deployment;
+these scripts do not publish local demo accounts into that configuration.
+Its JavaScript SDK stays on the pin adopted by
+[PR #10](https://github.com/theahaco/carbon-coin/pull/10).
+
+~~~sh
+npm run prototype:setup
 npm ci
 npm --prefix web ci
-cp .env.example .env
-```
+npm run web:dev
+~~~
 
-Edit `.env` to set your token's identity (`TOKEN_TICKER`, `TOKEN_NAME`,
-etc.) and to select a network via `XRPL_NETWORK` (`local` or `testnet`).
+For contributors:
 
-## Networks
-
-Switching networks is a single `.env` change:
-
-- **`XRPL_NETWORK=local`** (default) — a disposable, local, stand-alone
-  XRPL node running in Docker. No real money, no faucet rate limits, no
-  reliance on Testnet being up. **Requires Docker.**
-- **`XRPL_NETWORK=testnet`** — the public XRPL Testnet, funded via the
-  public faucet. **No Docker required** — this is the escape hatch if you
-  don't have (or don't want) a container runtime installed. Trade-offs:
-  faucet rate limits, real (if slow, ~4s) ledger close times instead of
-  instant on-demand ones, ledger state shared with the rest of the public
-  Testnet, and periodic full resets by Ripple (see
-  [Security notes](#security-notes)).
-
-An optional `XRPL_WS_URL` overrides the WebSocket endpoint for either
-network.
-
-### Running the local network
-
-```sh
-npm run devnet:up    # starts a stand-alone rippled node + a background ledger-advance loop
-npm run devnet:down  # stops both
-```
-
-Stand-alone mode never closes ledgers on its own, so `devnet:up` also spawns
-a small detached background process that calls the admin `ledger_accept` RPC
-every 500ms — without it, submitted transactions would never be confirmed.
-Both the container and the background process are tracked in `.devnet.json`
-(gitignored); `devnet:down` reads it to stop both and removes it. If you
-forget to run `devnet:down` (e.g. after killing the terminal), both will
-keep running until stopped manually.
-
-The local node's genesis account (address and secret are XRPL's
-well-known, publicly-documented stand-alone values — never use them for
-anything beyond local development) holds all XRP and is used to fund
-freshly-generated wallets directly, so no faucet is needed locally.
-
-## Usage
-
-With the local network running (`npm run devnet:up`) or `XRPL_NETWORK=testnet`
-set:
-
-```sh
-npm run setup:issuer                    # funds + configures the issuer, creates the MPT
-npm run setup:governance                # funds + configures governance, authorizes it to hold the MPT
-npm run mint -- <amount> [period]       # multisig-signed mint to governance (period defaults to the current year)
-npm run redistribute -- <address> <amount>  # multisig-signed Payment from governance to a recipient
-npm run status                          # prints issuance, balances, and signer list configuration
-```
-
-All state (generated addresses, signer seeds, the MPT issuance ID, and a
-record of which periods have already been minted) is persisted to
-`.deployment.json`, which is gitignored. Delete it (or specific fields
-within it) to redo a step from scratch.
-
-`mint` refuses to mint twice for the same period unless you pass `--force`,
-as a safety net against accidental double-issuance:
-
-```sh
-npm run mint -- 100000 2026          # first mint for 2026
-npm run mint -- 100000 2026          # refused: already minted for 2026
-npm run mint -- 100000 2026 --force  # explicit override, e.g. for a correction
-```
-
-## Testing
-
-```sh
-npm run test:integration
-```
-
-This runs the full Vitest suite, which spins up a fresh, disposable
-stand-alone rippled container per test file (via `testcontainers`) and
-exercises real transactions against it — no mocking of XRPL behavior. It
-covers:
-
-- MPT issuance creation (flags, whole-unit scale, no supply cap, metadata)
-- Multisig-gated minting, including insufficient-signature, disabled-master-
-  key, and unauthorized-destination failure cases
-- Governance setup and multisig redistribution
-- Issuer lock/unlock and clawback
-- Network-selection logic for both `local` and `testnet`
-
-```sh
+~~~sh
+npm run cli:lint           # ShellCheck
 npm run typecheck
-```
+npm run test:integration
+npm run web:test
+npm run web:build
+~~~
 
-## Web frontend
-
-`web/` is a static, frontend-only Astro site that lets issuer/governance
-multisig members run real, [GhostSig](https://ghostsig.dev)-signed minting
-and redistribution ceremonies directly from a browser — no server, no
-seeds held anywhere. General visitors can connect, self-authorize, view live
-stats, and send Gton they already hold.
-
-GhostSig only understands XRPL `testnet`/`devnet`/`mainnet`, so the web demo
-always targets **XRPL Testnet**, regardless of the CLI's `XRPL_NETWORK`
-setting. For "my address is a signer" to ever be true in the browser, the
-issuer/governance signer lists need at least one real, externally-supplied
-address (e.g. your own GhostSig address) — see `ISSUER_SIGNER_ADDRESSES` /
-`GOVERNANCE_SIGNER_ADDRESSES` in `.env.example`.
-
-```sh
-npm run setup:issuer      # with XRPL_NETWORK=testnet and ISSUER_SIGNER_ADDRESSES set
-npm run setup:governance  # likewise, with GOVERNANCE_SIGNER_ADDRESSES set
-npm run web:sync-config   # regenerates web/public/deployment.json (addresses only, never seeds)
-npm run web:dev           # or web:build / web:typecheck
-```
-
-`web/public/deployment.json` is a committed, regenerate-on-demand static
-asset containing only non-secret fields (addresses, quorum, token identity)
-— `sync-public-config.ts` refuses to write anything containing a `seed` key.
-See `web/src/lib/ghostsig.ts` for the vendored GHOSTSIG popup protocol client
-(adapted from `ghostsig/sdk/popup.ts`) that the site signs everything through.
-
-## Security notes
-
-- All signer seeds (issuer and governance) are sensitive secrets. They're
-  stored in `.deployment.json`, which is gitignored, but treat that file
-  with the same care as any private key material.
-- The issuer's and governance's 2-of-3 signer sets are **local/Testnet
-  placeholders**. Real signer accounts/keys must replace them before any
-  mainnet use. If a signer set is ever fully lost with no rotation path,
-  that account becomes permanently locked out of its own powers/funds.
-- Freeze and clawback are powerful, centralized controls, included
-  deliberately for this token. Document them clearly for any future holders
-  or auditors.
-- `SignerListSet` replaces an account's entire signer list; there's no
-  incremental add/remove. Rotating signers requires meeting the *current*
-  quorum to authorize the replacement list.
-- Ripple periodically resets XRPL Testnet entirely. A reset invalidates
-  `.deployment.json`; just rerun the setup scripts to redeploy.
-- The local stand-alone network's genesis secret is publicly known by
-  design (anyone can spin up their own local node) — never use it for
-  anything beyond local development funding.
+The CLI integration test runs the actual numbered scripts and pinned Rust binary
+against a fresh Docker ledger, checking named key/account records, the quorums,
+disabled master keys, token metadata, mint, holder authorization, balances, and
+read-only status. The existing SDK ledger regressions and browser tests remain
+independent checks.

@@ -1,11 +1,11 @@
 import { Client, Wallet } from 'xrpl'
-import { connectClient } from '../../src/lib/client.js'
-import { fundNewWallet, fundSignerWallets } from '../../src/lib/fund.js'
-import { establishMultisigAndDisableMasterKey } from '../../src/lib/accountSetup.js'
-import { MPT_ISSUANCE_FLAGS } from '../../src/lib/mpt.js'
-import { buildMptMetadataHex, readTokenMetadataConfig } from '../../src/lib/metadata.js'
-import type { AccountState } from '../../src/lib/config.js'
-import type { NetworkConfig } from '../../src/lib/network.js'
+import { connectClient } from './sdk/client.js'
+import { fundNewWallet, fundSignerWallets } from './sdk/fund.js'
+import { establishMultisigAndDisableMasterKey } from './sdk/accountSetup.js'
+import { MPT_ISSUANCE_FLAGS } from './sdk/mpt.js'
+import { buildMptMetadataHex, readTokenMetadataConfig } from './sdk/metadata.js'
+import type { AccountState } from './sdk/config.js'
+import type { NetworkConfig } from './sdk/network.js'
 
 export const SIGNER_COUNT = 3
 export const SIGNER_QUORUM = 2
@@ -33,7 +33,7 @@ async function toAccountState(
 
 /**
  * Funds and fully configures an issuer account (single-sig issuance, then
- * multisig + disabled master key) exactly like `setup-issuer.ts`.
+ * multisig + disabled master key) as an independent oracle for the CLI setup.
  */
 export async function setupIssuer(
   client: Client,
@@ -60,7 +60,7 @@ export async function setupIssuer(
 
 /**
  * Funds and fully configures a governance account (single-sig authorize,
- * then multisig + disabled master key) exactly like `setup-governance.ts`.
+ * then multisig + disabled master key) as an independent oracle for the CLI setup.
  */
 export async function setupGovernance(
   client: Client,

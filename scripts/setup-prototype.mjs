@@ -1,6 +1,6 @@
 // Temporary bootstrap for the unpublished SDK prototype: npm cannot install
 // packages/xrpl directly from a Git dependency on the monorepo, so this builds
-// the pinned checkout for the root and web file: dependencies. Prototype:
+// the pinned checkout for the test and browser file: dependencies. Prototype:
 // https://github.com/theahaco/xrpl.js/pull/57
 // Remove this script and its npm/CI hooks once both consumers use an installable
 // SDK release or prebuilt package with matching runtime dependencies and types.

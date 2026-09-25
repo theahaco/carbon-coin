@@ -26,7 +26,7 @@ export function readTokenMetadataConfig(env: NodeJS.ProcessEnv = process.env): T
     .filter(([, value]) => !value)
     .map(([key]) => key)
   if (missing.length > 0) {
-    throw new Error(`Missing required token identity env var(s): ${missing.join(', ')}. See .env.example.`)
+    throw new Error(`Missing required token identity fixture value(s): ${missing.join(', ')}.`)
   }
 
   return {

@@ -9,3 +9,6 @@ web/.astro/
 
 # Pinned, reproducibly built aha SDK (see prototype.json).
 .prototype/
+
+# Disposable local CLI walkthrough (encrypted keys and public results).
+.demo/

@@ -1,4 +1,4 @@
-import { localSigners } from '../../src/lib/multisig.js'
+import { localSigners } from '../helpers/sdk/multisig.js'
 import { fetchMPTokenOrUndefined } from 'xrpl'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startLocalNetwork, type LocalNetworkHandle } from '../helpers/localNetwork.js'

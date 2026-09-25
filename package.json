@@ -8,21 +8,17 @@
     "node": ">=22"
   },
   "scripts": {
-    "devnet:up": "tsx devnet/cli.ts up",
-    "devnet:down": "tsx devnet/cli.ts down",
-    "setup:issuer": "tsx src/scripts/setup-issuer.ts",
-    "setup:governance": "tsx src/scripts/setup-governance.ts",
-    "mint": "tsx src/scripts/mint.ts",
-    "redistribute": "tsx src/scripts/redistribute.ts",
-    "status": "tsx src/scripts/status.ts",
-    "web:sync-config": "tsx src/scripts/sync-public-config.ts",
+    "devnet:up": "bash scripts/start.sh",
+    "devnet:down": "bash scripts/stop.sh",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:typecheck": "npm --prefix web run typecheck",
     "web:test": "npm --prefix web run test",
     "test:integration": "vitest run",
     "typecheck": "tsc --noEmit && npm run web:typecheck",
-    "prototype:setup": "node scripts/setup-prototype.mjs"
+    "prototype:setup": "node scripts/setup-prototype.mjs",
+    "cli:setup": "bash scripts/setup-cli.sh",
+    "cli:lint": "shellcheck -x scripts/*.sh scripts/lib/*.sh"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
@@ -31,7 +27,6 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "testcontainers": "^10.16.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

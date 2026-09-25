@@ -1,0 +1,9 @@
+{
+  "t": "DEMO",
+  "n": "CLI Demo Token",
+  "d": "A token created with the Rust xrpl CLI.",
+  "i": "https://example.org/token-icon.png",
+  "ac": "other",
+  "as": "other",
+  "in": "CLI Demo"
+}
