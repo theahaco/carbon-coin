@@ -14,7 +14,10 @@ for name in issuer governance holder \
   governance_signer_1 governance_signer_2 governance_signer_3
 do
   xrpl key generate "$name" --algorithm ed25519
+  xrpl account add "$name" --key "$name" --network-id 0
 done
 
-# Save public addresses as variables such as $ISSUER and $GOVERNANCE.
-bash scripts/lib/save-addresses.sh
+# Import standalone's published genesis key and give its account a name too.
+printf '%s\n' snoPBrXtMeMyMHUVTgbuqAfg1SUTb |
+  xrpl key add genesis --seed-stdin --yes
+xrpl account add genesis --key genesis --network-id 0

@@ -75,6 +75,7 @@ jobs:
             ~/.cargo/git
             .prototype/xrpl-rust/target
           key: cli-${{ runner.os }}-${{ hashFiles('cli.json', 'cli/Cargo.lock') }}
+          restore-keys: cli-${{ runner.os }}-
 
       - run: npm run cli:setup
 

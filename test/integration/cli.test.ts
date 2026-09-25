@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Client, decodeMPTokenMetadata, fetchMPTokenOrUndefined } from 'xrpl'
-import { readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
-import { addresses, cliEnvironment, demo } from '../helpers/cli.js'
+import { accountRecords, cliEnvironment, demo } from '../helpers/cli.js'
 import { startRippledNode } from '../helpers/rippledNode.js'
 
 describe('numbered Bash walkthrough through the pinned Rust CLI', () => {
@@ -32,7 +32,15 @@ describe('numbered Bash walkthrough through the pinned Rust CLI', () => {
     for (const script of ['01-wallets.sh', '02-fund.sh', '03-issuer.sh', '04-governance.sh']) {
       await demo(env, script)
     }
-    accounts = addresses(env)
+    const records = await accountRecords(env)
+    expect(records).toHaveLength(10) // Nine generated identities and standalone genesis.
+    for (const record of records) {
+      expect(record.keys).toEqual([record.alias])
+      expect(record.network_id).toBe(0)
+    }
+    accounts = Object.fromEntries(records.map((record) => [record.alias.toUpperCase(), record.address]))
+    expect(accounts.GENESIS).toBe('rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh')
+    expect(existsSync(path.join(directory, 'accounts.env'))).toBe(false)
     issuanceId = readFileSync(path.join(directory, 'issuance-id'), 'utf8').trim()
     const { result } = await client.command.ledgerEntry({
       mpt_issuance: issuanceId, ledger_index: 'validated',
@@ -58,7 +66,7 @@ describe('numbered Bash walkthrough through the pinned Rust CLI', () => {
     }
     expect(new Set(signerAddresses).size).toBe(6)
     await expect(demo(env, '01-wallets.sh')).rejects.toThrow(/Demo keys already exist/)
-    expect(addresses(env)).toEqual(accounts)
+    expect(await accountRecords(env)).toEqual(records)
   }, 240_000)
 
   it('mints 1,000 units with two issuer signatures', async () => {

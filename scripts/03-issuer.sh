@@ -13,9 +13,9 @@ bash scripts/lib/save-issuance-id.sh
 
 # Install a 2-of-3 quorum before disabling the master key.
 xrpl tx new signer-list-set --account issuer --signer-quorum 2 \
-  --signer-entry "$ISSUER_SIGNER_1:1" \
-  --signer-entry "$ISSUER_SIGNER_2:1" \
-  --signer-entry "$ISSUER_SIGNER_3:1" |
+  --signer-entry "$(xrpl account show issuer_signer_1 --address):1" \
+  --signer-entry "$(xrpl account show issuer_signer_2 --address):1" \
+  --signer-entry "$(xrpl account show issuer_signer_3 --address):1" |
   xrpl tx autofill --url "$URL" |
   xrpl tx sign --sign-with issuer |
   xrpl tx submit --url "$URL" --wait --accept-ledger

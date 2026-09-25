@@ -20,11 +20,7 @@ command -v xrpl >/dev/null || {
   exit 1
 }
 
-# These files contain public addresses and the token ID, never seeds.
-if [[ -f "$DEMO_DIR/accounts.env" ]]; then
-  # shellcheck disable=SC1091
-  source "$DEMO_DIR/accounts.env"
-fi
+# Account names and addresses live in the CLI store. Only the token ID is saved here.
 if [[ -f "$DEMO_DIR/issuance-id" ]]; then
   MPT_ID=$(cat "$DEMO_DIR/issuance-id")
   export MPT_ID

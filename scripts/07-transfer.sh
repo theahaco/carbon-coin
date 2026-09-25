@@ -4,7 +4,8 @@ source scripts/lib/environment.sh
 AMOUNT=250
 
 # Governance sends existing units, using its own independent 2-of-3 quorum.
-xrpl tx new payment --account governance --destination "$HOLDER" \
+xrpl tx new payment --account governance \
+  --destination "$(xrpl account show holder --address)" \
   --amount "$AMOUNT/$MPT_ID" |
   xrpl tx autofill --url "$URL" --signers 2 |
   xrpl tx sign --multisign --sign-with governance_signer_1 |

@@ -9,9 +9,9 @@ xrpl tx new mptoken-authorize --account governance \
   xrpl tx submit --url "$URL" --wait --accept-ledger
 
 xrpl tx new signer-list-set --account governance --signer-quorum 2 \
-  --signer-entry "$GOVERNANCE_SIGNER_1:1" \
-  --signer-entry "$GOVERNANCE_SIGNER_2:1" \
-  --signer-entry "$GOVERNANCE_SIGNER_3:1" |
+  --signer-entry "$(xrpl account show governance_signer_1 --address):1" \
+  --signer-entry "$(xrpl account show governance_signer_2 --address):1" \
+  --signer-entry "$(xrpl account show governance_signer_3 --address):1" |
   xrpl tx autofill --url "$URL" |
   xrpl tx sign --sign-with governance |
   xrpl tx submit --url "$URL" --wait --accept-ledger

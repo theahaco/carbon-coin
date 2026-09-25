@@ -22,8 +22,8 @@ bash scripts/start.sh
 ~~~
 
 The installer builds the exact revision in [cli.json](cli.json):
-[xrpl-rust PR #42](https://github.com/theahaco/xrpl-rust/pull/42),
-commit 1b769886f676e3fad174b19c156432e0f1662fe1. This upstream stack is still
+[xrpl-rust PR #44](https://github.com/theahaco/xrpl-rust/pull/44),
+commit 7fd4b41631d0ff3aefb13f6cc35e8bc2960276c6. This upstream stack is still
 unmerged. [cli/Cargo.lock](cli/Cargo.lock) keeps the source build reproducible;
 an installable upstream release can eventually replace this bootstrap.
 
@@ -57,12 +57,23 @@ and clawback are enabled.
 
 ## Read a transaction
 
+The wallet step creates a named key and records its account directly in the CLI:
+
+~~~bash
+xrpl key generate issuer --algorithm ed25519
+xrpl account add issuer --key issuer --network-id 0
+~~~
+
+The CLI derives the account's address from its key. There is no separate address
+map to maintain. Account names select who acts; key names select who signs.
+
 The mint script is the main example:
 
 ~~~bash
 AMOUNT=1000
 
-xrpl tx new payment --account issuer --destination "$GOVERNANCE" \
+xrpl tx new payment --account issuer \
+  --destination "$(xrpl account show governance --address)" \
   --amount "$AMOUNT/$MPT_ID" --memo "CLI demo mint" |
   xrpl tx autofill --url "$URL" --signers 2 |
   xrpl tx sign --multisign --sign-with issuer_signer_1 |
@@ -70,7 +81,9 @@ xrpl tx new payment --account issuer --destination "$GOVERNANCE" \
   xrpl tx submit --url "$URL" --wait --accept-ledger
 ~~~
 
-- A variable such as $GOVERNANCE holds an address saved by the wallet step.
+- A variable such as $AMOUNT holds a value used by the command.
+- $(xrpl account show governance --address) reads the address from the named
+  CLI record and inserts it into the command. No JSON parsing is needed.
 - A backslash continues a command on the next line.
 - A pipe sends one command's JSON output to the next command.
 - **new** creates a transaction. The amount is units/token-ID for an MPT.
@@ -79,16 +92,21 @@ xrpl tx new payment --account issuer --destination "$GOVERNANCE" \
 - **submit** sends it and waits for validation. The accept-ledger option closes
   a ledger on the standalone node.
 
-The same four stages appear throughout the examples. Account aliases such as
-issuer work with the account option; destinations and signer entries use the
-saved addresses. The setup helpers in [scripts/lib/](scripts/lib/) handle the
-few JSON fields needed to save those addresses and the token ID. jq is a setup
-dependency, but there are no jq expressions in the numbered scripts.
+The same four stages appear throughout the examples. The CLI accepts a name
+directly for the account option. Destinations and signer entries still require
+addresses, obtained with account show NAME --address from the same CLI store.
+Signing uses an explicit named key, such as --sign-with issuer_signer_1.
+The helpers in [scripts/lib/](scripts/lib/) handle the node check and token ID;
+jq is still a setup dependency, but account lookups do not need it and there
+are no jq expressions in the numbered scripts.
 
 To try CLI commands directly in your terminal, load the same environment first:
 
 ~~~bash
 source scripts/lib/environment.sh
+xrpl key ls
+xrpl account ls
+xrpl account show issuer --address
 xrpl account info --account issuer --signer-lists --url "$URL"
 xrpl tx new payment --help
 ~~~
@@ -142,6 +160,7 @@ npm run web:build
 ~~~
 
 The CLI integration test runs the actual numbered scripts and pinned Rust binary
-against a fresh Docker ledger, checking the quorums, disabled master keys, token
-metadata, mint, holder authorization, balances, and read-only status. The existing
-SDK ledger regressions and browser tests remain independent checks.
+against a fresh Docker ledger, checking named key/account records, the quorums,
+disabled master keys, token metadata, mint, holder authorization, balances, and
+read-only status. The existing SDK ledger regressions and browser tests remain
+independent checks.
